@@ -38,11 +38,15 @@ Untradeables already in your bank sit **locked** below a divider at the bottom o
 - **Charged, degraded or combined versions of tradeable gear** (abyssal tentacle, bowfa, crystal armour, degraded barrows, charged Tumeken's shadow...) are treated as normal items and valued from their tradeable parts.
 
 ### Goals, timer and stats
+<img src="images/timer-overlay.gif" alt="In-game timer overlay counting down" align="right" width="230">
+
 - **Goals**: temporary bank value, coins, or a quantity of any item. The side panel shows a progress bar. Reaching the goal stops the timer and sends a chat message and notification with your time and GP/hr.
 - **In-game timer**: counts in-game time only (game ticks), and pauses while you're logged out.
 - **Timer overlay**: time left on your time limit, time elapsed, net value, GP/hr, goal progress and PK stats. It flashes slowly red when the time limit runs out. Hold Alt and drag to move it.
 - **Player kills**: once you get a PK, the number of kills and the average kill value are shown. Kills with ground loot and kills with loot keys both count; a loot key's value is added when you open the loot chest.
 - **GP/hr** = net value ÷ in-game time. **Net value** = temporary bank value minus any debt.
+
+<br clear="right">
 
 ### Other settings
 <img src="images/settings.png" alt="Plugin settings" align="right" width="200">
