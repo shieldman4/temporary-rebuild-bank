@@ -116,7 +116,7 @@ class RebuildBankPanel extends PluginPanel
 		JPanel stats = new JPanel(new GridLayout(0, 2, 4, 3));
 		stat(stats, "In-game time", time);
 		stat(stats, "Bank value", bankValue);
-		stat(stats, "Paid (unlocks/buys)", spent);
+		stat(stats, "Paid out", spent);
 		stat(stats, "Debt", debt);
 		stat(stats, "Net value", netValue);
 		stat(stats, "GP / hour", gpHr);

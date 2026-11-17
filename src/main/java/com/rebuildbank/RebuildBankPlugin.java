@@ -49,6 +49,7 @@ import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.events.ProfileChanged;
 import net.runelite.client.events.RuneScapeProfileChanged;
 import net.runelite.client.game.ItemEquipmentStats;
 import net.runelite.client.game.ItemManager;
@@ -173,6 +174,9 @@ public class RebuildBankPlugin extends Plugin
 	@Override
 	protected void startUp()
 	{
+		// Fill in any settings missing from the active RuneLite profile (e.g. a newly
+		// created one), otherwise the config panel can't show the dropdowns.
+		configManager.setDefaultConfiguration(config, false);
 		panel = new RebuildBankPanel(this, config.showRebuildView());
 		navButton = NavigationButton.builder()
 			.tooltip("Temporary Rebuild Bank")
@@ -322,6 +326,17 @@ public class RebuildBankPlugin extends Plugin
 	}
 
 	// ------------------------------------------------------------------ events
+
+	@Subscribe
+	public void onProfileChanged(ProfileChanged e)
+	{
+		// switching RuneLite settings profiles: make sure this profile has our defaults too
+		configManager.setDefaultConfiguration(config, false);
+		if (panel != null)
+		{
+			SwingUtilities.invokeLater(() -> panel.setViewToggle(config.showRebuildView()));
+		}
+	}
 
 	@Subscribe
 	public void onRuneScapeProfileChanged(RuneScapeProfileChanged e)

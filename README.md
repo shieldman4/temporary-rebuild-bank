@@ -4,6 +4,10 @@ A RuneLite plugin for **rebuild challenges and series**. Press Start and your ba
 
 Your real bank is never touched. The plugin only changes what you see in the bank interface and keeps its own record of what you add and take out.
 
+| Your temporary bank | Side panel with a goal |
+|---|---|
+| ![Temporary bank in the bank interface](images/temporary-bank.gif) | ![Side panel with goal, stats and items](images/side-panel.gif) |
+
 ## Features
 
 ### A fresh, empty bank
@@ -15,6 +19,8 @@ Your real bank is never touched. The plugin only changes what you see in the ban
 
 ### Untradeables
 Untradeables already in your bank sit **locked** below a divider at the bottom of the temporary bank. Click one and choose **Unlock** to move it into your temporary bank.
+
+![A fresh temporary bank with a locked untradeable below the divider](images/untradeables.gif)
 
 - **Unlock cost**:
   - *Locked*: they can't be unlocked.
@@ -39,9 +45,13 @@ Untradeables already in your bank sit **locked** below a divider at the bottom o
 - **GP/hr** = net value ÷ in-game time. **Net value** = temporary bank value minus any debt.
 
 ### Other settings
+<img src="images/settings.png" alt="Plugin settings" align="right" width="200">
+
 - **Buy from hidden bank**: allows withdrawing tradeables from your real bank, paying their GE price with temporary bank coins. Anything your coins can't cover shows as debt.
 - **Don't count starting items**: tradeables you're wearing or carrying when you press Start go back to your real bank when deposited, instead of counting as progress.
 - **Value untradeables**: counts untradeables at their high alch value. When off, they count as 0 gp.
+
+<br clear="right">
 
 ### Logging in and out
 Each account has its own temporary bank, saved in your RuneLite profile. Changes made while the plugin wasn't watching (another client, mobile, a deposit box) are picked up the next time you open the bank.
