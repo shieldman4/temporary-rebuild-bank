@@ -56,11 +56,13 @@ public interface RebuildBankConfig extends Config
 
 	@ConfigItem(
 		keyName = "carriedAreBorrowed",
-		name = "Don't count starting items",
-		description = "On: tradeables you're wearing or carrying when you press Start don't count towards your "
-			+ "temporary bank. Depositing them puts them back in your hidden real bank.<br>"
-			+ "Off: everything you deposit counts, including what you started with.<br>"
-			+ "Untradeables you start with always count as yours.",
+		name = "Starting items are owed",
+		description = "On: tradeables you're wearing or carrying when you press Start came from your real bank, "
+			+ "so they show as owed (in red) until you deposit them back. Eating, spending or dropping them "
+			+ "keeps them owed until you replace them.<br>"
+			+ "Untradeables you start with are locked like the ones in your bank once you deposit them.<br>"
+			+ "Off: everything you start with is yours and counts as progress.<br>"
+			+ "Untradeables you get during the run are always yours.",
 		position = 4
 	)
 	default boolean carriedAreBorrowed()
@@ -97,12 +99,12 @@ public interface RebuildBankConfig extends Config
 		name = "Unlock cost",
 		description = "Untradeables already in your bank when you start:<br>"
 			+ "Locked: they can't be unlocked at all.<br>"
-			+ "Free: click to unlock them for free.<br>"
+			+ "Free: right-click them in the bank and choose Unlock, for free.<br>"
 			+ "Perdu price: pay once per item what Perdu charges to repair/replace it.<br>"
 			+ "Custom price: pay once per item the amount you set below.<br>"
 			+ "Paid only with coins in your temporary bank - the coins in your real bank are never used "
 			+ "and stay where they are.<br>"
-			+ "Untradeables you earn or bring yourself are always yours.",
+			+ "Untradeables you get during the run are always yours.",
 		position = 11,
 		section = untradeableSection
 	)
@@ -118,6 +120,7 @@ public interface RebuildBankConfig extends Config
 			+ "Perdu items: things Perdu repairs or sells back (fire/infernal cape, defenders, void, god capes...).<br>"
 			+ "Combat gear: any untradeable gear with combat stats (adds skillcapes, cosmetic defenders...).<br>"
 			+ "Everything: every untradeable, including quest items and clue junk (not recommended).<br>"
+			+ "Rune pouches are always offered (you can only own one); at Perdu price they cost a rune pouch note on the GE.<br>"
 			+ "Charged, degraded or combined versions of tradeable gear (tentacle, bowfa, crystal armour, degraded "
 			+ "barrows, charged chainmace/Tumeken's shadow...) are never untradeables - they count as normal items.",
 		position = 14,

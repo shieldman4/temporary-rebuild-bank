@@ -55,7 +55,10 @@ final class PerduCosts
 		return map;
 	}
 
-	/** Parses "Fire cape: 1m" / "Fire cape=1m" lines (or comma separated). */
+	/**
+	 * Parses "Fire cape: 1m" / "Fire cape=1m" entries, one per line or separated by ";" or ",".
+	 * A comma followed by a digit is part of a number ("1,000,000"), not a separator.
+	 */
 	static Map<String, Long> parseCustom(String text)
 	{
 		Map<String, Long> map = new HashMap<>();
@@ -63,7 +66,7 @@ final class PerduCosts
 		{
 			return map;
 		}
-		for (String part : text.split("[\n,;]"))
+		for (String part : text.split("[\n;]|,(?!\\d)"))
 		{
 			int sep = Math.max(part.lastIndexOf(':'), part.lastIndexOf('='));
 			if (sep <= 0)

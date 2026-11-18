@@ -88,7 +88,6 @@ public class RebuildBankPlugin extends Plugin
 
 	// Bank title-bar toggle
 	private static final String TOGGLE_NAME = "<col=ff9040>Temporary Bank</col>";
-	private static final String TOGGLE_BUTTON = TOGGLE_NAME + "button";
 	private static final String TOGGLE_ICON = TOGGLE_NAME + "icon";
 	private static final String TOGGLE_TINT = TOGGLE_NAME + "tint";
 	private static final int TOGGLE_TINT_COLOR = 0xb08a1a;
@@ -124,6 +123,11 @@ public class RebuildBankPlugin extends Plugin
 
 	/** Loot keys in the inventory last time we looked; -1 until the first look. */
 	private int lootKeyCount = -1;
+
+	/** Looting bag contents the last time the game showed them, and when. */
+	private Map<Integer, Long> lootingBagSeen;
+	private long lootingBagSeenAt;
+	private static final long LOOTING_BAG_FRESH_MILLIS = 60_000;
 	private boolean lootChestValued;
 
 	// Bank item grid (matches the core bank tags layout)
@@ -267,6 +271,9 @@ public class RebuildBankPlugin extends Plugin
 			String oldItemName = session != null ? session.goalItemName : null;
 
 			session = RebuildSession.start(System.currentTimeMillis());
+			// loot keys you already have aren't kills from this run
+			lootKeyCount = -1;
+			lootChestValued = false;
 			// Keep the previous goal so a new attempt can be started quickly
 			session.goalType = oldGoal;
 			session.goalTarget = oldTarget;
@@ -277,28 +284,60 @@ public class RebuildBankPlugin extends Plugin
 			Map<Integer, Long> carried = new HashMap<>();
 			addContainer(carried, InventoryID.INV);
 			addContainer(carried, InventoryID.WORN);
+			// What's inside a looting bag you're carrying is starting items too. The game only
+			// shows the bag's contents while you check it, so use the copy remembered from
+			// the last check if it's recent; otherwise warn that we can't see inside.
+			ItemContainer inv = client.getItemContainer(InventoryID.INV);
+			boolean carryingLootingBag = inv != null
+				&& (inv.contains(ItemID.LOOTING_BAG) || inv.contains(ItemID.LOOTING_BAG_OPEN));
+			Map<Integer, Long> bagContents = carryingLootingBag ? recentLootingBag() : null;
+			if (bagContents != null)
+			{
+				bagContents.forEach((id, q) -> carried.merge(id, q, Long::sum));
+			}
 			if (!config.carriedAreBorrowed())
 			{
-				// tradeables you carry count as yours; untradeables still follow the untradeable rules
-				carried.keySet().removeIf(id -> !policy.isUntradeable(id));
+				// setting off: everything you start with is yours and counts as progress
+				carried.clear();
 			}
-			session.borrowCarried(carried, policy);
+			session.oweCarried(carried, policy);
+			int owedAtStart = (int) carried.keySet().stream().filter(id -> !policy.alwaysYours(id)).count();
+			if (carryingLootingBag && bagContents == null && config.carriedAreBorrowed())
+			{
+				chat(ColorUtil.wrapWithColorTag("Your looting bag wasn't checked in the last minute,", Color.RED)
+					+ " so anything inside it could count as new. Check it (right-click > Check) and"
+					+ " start a new temporary bank, or empty it into your bank first.", true);
+			}
 
+			// Only use the bank's contents if it's open now: RuneLite's copy goes stale once
+			// it's closed (a deposit box changes the bank without updating it)
 			ItemContainer bank = client.getItemContainer(InventoryID.BANK);
-			if (bank != null)
+			if (bank != null && isWidgetOpen(InterfaceID.Bankmain.ITEMS))
 			{
 				session.applyRealBank(snapshot(bank), policy());
 				chat("Temporary bank started! Your bank is now empty. Timer is running.");
+				warnStartingItems(owedAtStart);
 			}
 			else
 			{
 				chat("Temporary bank started! Open your bank once to set the starting point - the timer starts then.");
+				warnStartingItems(owedAtStart);
 			}
 			ticksSinceSave = 0;
 			saveSession();
 			rebuildBankInterface();
 			refreshPanel();
 		});
+	}
+
+	private void warnStartingItems(int kinds)
+	{
+		if (kinds > 0)
+		{
+			chat(ColorUtil.wrapWithColorTag("You started with " + kinds + (kinds == 1 ? " item" : " items")
+				+ " from your real bank,", Color.RED) + " so they're owed until you deposit them back."
+				+ " Bank your inventory and gear first for a clean start.", true);
+		}
 	}
 
 	void endSession()
@@ -407,6 +446,9 @@ public class RebuildBankPlugin extends Plugin
 		{
 			session = null;
 			profileKey = null;
+			lootKeyCount = -1;
+			lootChestValued = false;
+			lootingBagSeen = null;
 			refreshPanel();
 		}
 		else if (state == GameState.LOGGED_IN && session == null)
@@ -437,9 +479,40 @@ public class RebuildBankPlugin extends Plugin
 		}
 	}
 
+	private boolean isWidgetOpen(int componentId)
+	{
+		Widget w = client.getWidget(componentId);
+		return w != null && !w.isHidden();
+	}
+
+	/**
+	 * The looting bag's contents as last shown by the game, or null if not seen in the last
+	 * minute. Old copies aren't trusted: items added to the bag later don't update them.
+	 */
+	private Map<Integer, Long> recentLootingBag()
+	{
+		ItemContainer live = client.getItemContainer(InventoryID.LOOTING_BAG);
+		if (live != null)
+		{
+			return snapshot(live);
+		}
+		if (lootingBagSeen != null && System.currentTimeMillis() - lootingBagSeenAt <= LOOTING_BAG_FRESH_MILLIS)
+		{
+			return new HashMap<>(lootingBagSeen);
+		}
+		return null;
+	}
+
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged e)
 	{
+		if (e.getContainerId() == InventoryID.LOOTING_BAG)
+		{
+			// remember it: the game forgets the contents once the Check window closes
+			lootingBagSeen = snapshot(e.getItemContainer());
+			lootingBagSeenAt = System.currentTimeMillis();
+			return;
+		}
 		if (session != null && e.getContainerId() == InventoryID.INV)
 		{
 			trackLootKeys(e.getItemContainer());
@@ -483,8 +556,12 @@ public class RebuildBankPlugin extends Plugin
 			return;
 		}
 		final int itemId = itemManager.canonicalize(slot.getId());
+		if (session.count(itemId) > 0 || session.poolCount(itemId) <= 0)
+		{
+			return;
+		}
 		RebuildSession.Policy policy = policy();
-		if (session.count(itemId) > 0 || !session.unlockable(policy).containsKey(itemId))
+		if (!session.canUnlockNow(itemId, policy))
 		{
 			return;
 		}
@@ -500,11 +577,19 @@ public class RebuildBankPlugin extends Plugin
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked e)
 	{
+		String option = e.getMenuOption() == null ? null : Text.removeTags(e.getMenuOption());
+		if (e.getParam1() == InterfaceID.Bankmain.POTIONSTORE_ITEMS && option != null && option.startsWith("Withdraw")
+			&& session != null && !session.baselinePending && config.showRebuildView())
+		{
+			// The plugin can't see potion storage, so potions from your real bank could slip in
+			e.consume();
+			chat("Potion storage isn't part of your temporary bank - switch to your real bank to use it.", true);
+			return;
+		}
 		if (e.getParam1() != InterfaceID.Bankmain.ITEMS)
 		{
 			return;
 		}
-		String option = e.getMenuOption() == null ? null : Text.removeTags(e.getMenuOption());
 		if (session == null || session.baselinePending)
 		{
 			return;
@@ -525,7 +610,7 @@ public class RebuildBankPlugin extends Plugin
 		}
 
 		RebuildSession.Policy policy = policy();
-		if (session.count(itemId) <= 0 && session.unlockable(policy).containsKey(itemId))
+		if (session.count(itemId) <= 0 && session.canUnlockNow(itemId, policy))
 		{
 			e.consume();
 			chat("Unlock " + itemManager.getItemComposition(itemId).getName() + " first - right-click it and choose Unlock.");
@@ -535,9 +620,8 @@ public class RebuildBankPlugin extends Plugin
 
 		ItemContainer bank = client.getItemContainer(InventoryID.BANK);
 		long real = bank != null ? bank.count(itemId) : 0;
-		long wanted = requestedAmount(option, real);
-		boolean overdraw = wanted < 0 ? allowed <= 0 : Math.min(wanted, real) > allowed;
-		if (!overdraw)
+		long wanted = RebuildSession.requestedAmount(option, real);
+		if (!RebuildSession.overdraws(wanted, real, allowed))
 		{
 			return;
 		}
@@ -841,7 +925,7 @@ public class RebuildBankPlugin extends Plugin
 				sepText.setTextColor(LABEL_COLOR);
 			}
 			sepText.setText(policy.untradeableMode() == UntradeableMode.ALLOWED
-				? "Untradeables - click to unlock (free)"
+				? "Untradeables - right-click to unlock (free)"
 				: "Untradeables - unlock with temporary bank coins");
 			sepText.setOriginalX(ITEM_START_X);
 			sepText.setOriginalY(top);
@@ -924,8 +1008,11 @@ public class RebuildBankPlugin extends Plugin
 
 			Widget icon = namedChild(container, OWED_PREFIX + "item" + i, WidgetType.GRAPHIC);
 			icon.setItemId(e.getKey());
-			icon.setItemQuantity(1);
+			// the real amount picks the right stack picture (a pile of coins, not one coin);
+			// the game's own number is hidden and drawn in red below instead
+			icon.setItemQuantity((int) Math.min(Integer.MAX_VALUE, e.getValue()));
 			icon.setItemQuantityMode(ItemQuantityMode.NEVER);
+			icon.setBorderType(1); // the thin black outline the bank draws around every item
 			icon.setOpacity(0);
 			place(icon, x, iy, ITEM_WIDTH, ITEM_HEIGHT);
 
@@ -935,8 +1022,8 @@ public class RebuildBankPlugin extends Plugin
 			qty.setXTextAlignment(WidgetTextAlignment.LEFT);
 			qty.setYTextAlignment(WidgetTextAlignment.TOP);
 			qty.setTextColor(OWED_COLOR);
-			qty.setText("-" + Amounts.shortFormat(e.getValue()));
-			place(qty, x, iy - 1, ITEM_X_STEP, 12);
+			qty.setText("-" + Amounts.stackFormat(e.getValue()));
+			place(qty, x, iy - 1, ITEM_WIDTH + 8, 12);
 			i++;
 		}
 		int rows = (i + ITEMS_PER_ROW - 1) / ITEMS_PER_ROW;
@@ -1037,14 +1124,8 @@ public class RebuildBankPlugin extends Plugin
 			return;
 		}
 
-		// widgets from older versions of the button (text label, rectangles)
-		hide(findNamed(universe, TOGGLE_NAME));
-		hide(findNamed(universe, TOGGLE_NAME + "bg"));
-		hide(findNamed(universe, TOGGLE_NAME + "border"));
-
 		// The button has no name (the game would show it in the mouse-over text),
 		// so it's found by reference; the tint and icon have no actions and keep names.
-		hide(findNamed(universe, TOGGLE_BUTTON)); // named button from an older version
 		Widget button = isChildOf(toggleButton, universe) ? toggleButton : null;
 		Widget tint = findNamed(universe, TOGGLE_TINT);
 		Widget icon = findNamed(universe, TOGGLE_ICON);
@@ -1227,6 +1308,14 @@ public class RebuildBankPlugin extends Plugin
 			}
 
 			@Override
+			public boolean alwaysYours(int itemId)
+			{
+				// You can only own one looting bag, so if it were locked away you could
+				// never get another during the run: it's always part of the temporary bank.
+				return itemId == ItemID.LOOTING_BAG || itemId == ItemID.LOOTING_BAG_OPEN;
+			}
+
+			@Override
 			public boolean isUnlockable(int itemId)
 			{
 				String name = itemManager.getItemComposition(itemId).getName();
@@ -1234,9 +1323,9 @@ public class RebuildBankPlugin extends Plugin
 				{
 					return false;
 				}
-				if (matches(always, name))
+				if (matches(always, name) || runePouchCost(itemId) >= 0)
 				{
-					return true;
+					return true; // rune pouches are always offered: you can only own one
 				}
 				switch (filter)
 				{
@@ -1260,13 +1349,15 @@ public class RebuildBankPlugin extends Plugin
 			public long untradeableCost(int itemId)
 			{
 				String name = itemManager.getItemComposition(itemId).getName();
+				long pouch = runePouchCost(itemId);
+				long otherwise = pouch > 0 ? pouch : fallback;
 				switch (mode)
 				{
 					case REPAIR_COST:
 						long perdu = PerduCosts.cost(name);
-						return perdu >= 0 ? perdu : fallback;
+						return perdu >= 0 ? perdu : otherwise;
 					case CUSTOM:
-						return custom.getOrDefault(name.toLowerCase(Locale.ROOT), fallback);
+						return custom.getOrDefault(name.toLowerCase(Locale.ROOT), otherwise);
 					default:
 						return 0;
 				}
@@ -1284,6 +1375,25 @@ public class RebuildBankPlugin extends Plugin
 				return itemManager.getItemPrice(itemId);
 			}
 		};
+	}
+
+	/**
+	 * What a rune pouch is worth to unlock: a rune pouch note from the Grand Exchange
+	 * (swapped for a pouch at any bank), plus a Thread of Elidinis for a divine pouch.
+	 * -1 if the item isn't a rune pouch. 0 if the GE price isn't known.
+	 */
+	private long runePouchCost(int itemId)
+	{
+		if (itemId != ItemID.BH_RUNE_POUCH && itemId != ItemID.DIVINE_RUNE_POUCH)
+		{
+			return -1;
+		}
+		long note = Math.max(0, itemManager.getItemPrice(ItemID.PROMISSORY_NOTE_RUNEPOUCH));
+		if (itemId == ItemID.DIVINE_RUNE_POUCH && note > 0)
+		{
+			return note + Math.max(0, PerduCosts.cost("Thread of Elidinis"));
+		}
+		return note;
 	}
 
 	/**
@@ -1398,31 +1508,6 @@ public class RebuildBankPlugin extends Plugin
 		snapshot(client.getItemContainer(containerId)).forEach((id, q) -> into.merge(id, q, Long::sum));
 	}
 
-	/** Amount a withdraw option will take, or -1 if unknown (Withdraw-X prompt). */
-	private long requestedAmount(String option, long realCount)
-	{
-		String suffix = option.substring("Withdraw".length()).replaceFirst("^-", "").trim();
-		switch (suffix.toLowerCase(Locale.ROOT))
-		{
-			case "all":
-				return realCount;
-			case "all-but-1":
-				return Math.max(0, realCount - 1);
-			case "x":
-				return -1;
-			case "":
-				return client.getVarbitValue(VarbitID.BANK_REQUESTEDQUANTITY);
-			default:
-				try
-				{
-					return Long.parseLong(suffix);
-				}
-				catch (NumberFormatException ex)
-				{
-					return -1;
-				}
-		}
-	}
 
 	private int resolveItem(String text)
 	{
@@ -1476,6 +1561,11 @@ public class RebuildBankPlugin extends Plugin
 				chat(ColorUtil.wrapWithColorTag("You owe " + Amounts.format(c.violated) + " x " + name + "!", Color.RED)
 					+ " That came out of your real bank - deposit it back.", true);
 			}
+			if (c.locked > 0)
+			{
+				chat("Your starting " + name + (c.locked > 1 ? " (" + Amounts.format(c.locked) + ")" : "")
+					+ " is locked like your other untradeables - right-click it in the bank to unlock it.", true);
+			}
 			if (c.repaid > 0)
 			{
 				long left = session != null ? session.getOwed().getOrDefault(c.itemId, 0L) : 0;
@@ -1498,10 +1588,6 @@ public class RebuildBankPlugin extends Plugin
 			if (c.unlocked > 0 && c.unlockCost == 0)
 			{
 				chat("Took " + Amounts.format(c.unlocked) + " x " + name + " from your existing untradeables.");
-			}
-			if (c.returned > 0)
-			{
-				chat("Returned " + Amounts.format(c.returned) + " x " + name + " to your hidden real bank.");
 			}
 		}
 	}
@@ -1706,10 +1792,11 @@ public class RebuildBankPlugin extends Plugin
 		rows.sort(Comparator.comparingLong(PanelData.Row::getValue).reversed()
 			.thenComparing(PanelData.Row::getName));
 
-		long net = bankValue - session.spent;
+		long owedValue = session.owedValue(this::unitValue);
+		long net = Math.max(0, bankValue - session.spent - owedValue); // same as RebuildSession.netValue
 		long ticks = session.challengeTicks();
 		cachedNetValue = net;
-		cachedOwedValue = session.owedValue(this::unitValue);
+		cachedOwedValue = owedValue;
 		cachedGoalProgress = session.goalProgress(this::unitValue, ItemID.COINS);
 		String status;
 		if (session.baselinePending)
@@ -1737,7 +1824,7 @@ public class RebuildBankPlugin extends Plugin
 			.gpPerHour(RebuildSession.gpPerHour(net, ticks))
 			.goalType(session.goalType)
 			.goalTarget(session.goalTarget)
-			.goalProgress(session.goalProgress(this::unitValue, ItemID.COINS))
+			.goalProgress(cachedGoalProgress)
 			.goalItemName(session.goalItemName)
 			.complete(session.isComplete())
 			.violations(session.violations)

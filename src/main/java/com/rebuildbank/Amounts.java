@@ -44,6 +44,20 @@ final class Amounts
 		return NumberFormat.getIntegerInstance(Locale.US).format(v);
 	}
 
+	/** Like the game's own stack numbers: 99999, then 100K, then 10M. */
+	static String stackFormat(long v)
+	{
+		if (v >= 10_000_000L)
+		{
+			return (v / 1_000_000L) + "M";
+		}
+		if (v >= 100_000L)
+		{
+			return (v / 1_000L) + "K";
+		}
+		return Long.toString(v);
+	}
+
 	/** 1.2M style, for compact labels. */
 	static String shortFormat(long v)
 	{

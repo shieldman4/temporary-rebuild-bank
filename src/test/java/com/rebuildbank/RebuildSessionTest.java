@@ -12,7 +12,8 @@ import org.junit.Test;
 public class RebuildSessionTest
 {
 	private static final int COINS = 995, WHIP = 4151, FIRE_CAPE = 6570, LOBSTER = 379, TORSO = 10551;
-	private static final Set<Integer> UNTRADEABLE = Set.of(FIRE_CAPE, TORSO);
+	private static final int MOONCLAN_HAT = 9069;
+	private static final Set<Integer> UNTRADEABLE = Set.of(FIRE_CAPE, TORSO, MOONCLAN_HAT);
 
 	private static Map<Integer, Long> bank(long... pairs)
 	{
@@ -131,12 +132,16 @@ public class RebuildSessionTest
 	}
 
 	@Test
-	public void carriedTradeablesAreReturnedNotCounted()
+	public void startingTradeablesAreOwedUntilDeposited()
 	{
 		RebuildSession s = RebuildSession.start(0);
-		s.borrowCarried(bank(WHIP, 1, COINS, 1000), STRICT);
+		assertEquals(1001, s.oweCarried(bank(WHIP, 1, COINS, 1000), STRICT));
 		s.applyRealBank(bank(), STRICT);
-		s.applyRealBank(bank(WHIP, 1, COINS, 1500), STRICT);
+		assertEquals(1, s.getOwed().get(WHIP).longValue()); // shown as owed straight away
+		assertEquals(0, s.violations); // starting items aren't a rule break
+
+		s.applyRealBank(bank(WHIP, 1, COINS, 1500), STRICT); // deposit them + 500 earned coins
+		assertTrue(s.getOwed().isEmpty()); // paid back
 		assertEquals(0, s.count(WHIP));
 		assertEquals(500, s.count(COINS));
 	}
@@ -196,18 +201,38 @@ public class RebuildSessionTest
 	}
 
 	@Test
-	public void untradeablesYouBringOrEarnAreYours()
+	public void startingUntradeablesAreLockedButNewOnesAreYours()
 	{
 		RebuildSession.Policy paid = policy(UntradeableMode.CUSTOM, 1_000_000, false, 0);
 		RebuildSession s = RebuildSession.start(0);
-		s.borrowCarried(bank(TORSO, 1, WHIP, 1), paid); // wearing a torso and a whip
+		assertEquals(2, s.oweCarried(bank(TORSO, 1, WHIP, 1), paid)); // wearing a torso and a whip at Start
 		s.applyRealBank(bank(FIRE_CAPE, 1), paid);
-		s.applyRealBank(bank(FIRE_CAPE, 2, TORSO, 1, WHIP, 1), paid); // bank them + a newly earned fire cape
-		assertEquals(1, s.count(TORSO));     // untradeable you brought: yours
-		assertEquals(1, s.count(FIRE_CAPE)); // the one you earned: yours
-		assertEquals(0, s.count(WHIP));      // tradeable you brought: old bank
-		assertEquals(1, s.poolCount(FIRE_CAPE)); // the old one is still locked
-		assertEquals(0, s.spent);
+		assertEquals(1, s.getOwed().get(TORSO).longValue()); // both show as owed until deposited
+		assertEquals(1, s.getOwed().get(WHIP).longValue());
+
+		List<RebuildSession.Change> c = s.applyRealBank(bank(FIRE_CAPE, 2, TORSO, 1, WHIP, 1), paid); // bank them + a newly earned fire cape
+		assertEquals(0, s.count(TORSO)); // untradeable you started with: not yours...
+		assertEquals(1, s.poolCount(TORSO)); // ...it's locked, to unlock under your settings
+		assertEquals(1, s.count(FIRE_CAPE)); // the fire cape you earned: yours
+		assertEquals(1, s.poolCount(FIRE_CAPE)); // the one from your bank is still locked
+		assertEquals(0, s.count(WHIP)); // tradeable you started with: paid back
+		assertTrue(s.getOwed().isEmpty());
+		assertEquals(1, c.stream().filter(x -> x.itemId == TORSO).findFirst().get().locked);
+	}
+
+	@Test
+	public void moonclanBoughtDuringTheRunIsYours()
+	{
+		// your example: a moonclan hat costs 1m to unlock, but a few thousand on Lunar Isle
+		RebuildSession.Policy custom = policy(UntradeableMode.CUSTOM, 1_000_000, false, 0);
+		RebuildSession s = RebuildSession.start(0);
+		s.oweCarried(bank(MOONCLAN_HAT, 1), custom); // wearing one at Start
+		s.applyRealBank(bank(MOONCLAN_HAT, 4), custom); // 4 more in the real bank
+
+		s.applyRealBank(bank(MOONCLAN_HAT, 7), custom); // deposit the starting one + 2 bought on Lunar Isle
+		assertEquals(2, s.count(MOONCLAN_HAT)); // the 2 bought ones are yours
+		assertEquals(5, s.poolCount(MOONCLAN_HAT)); // the starting one joins the 4 locked ones
+		assertEquals(1_000_000, s.unlockFee(MOONCLAN_HAT, custom)); // unlocking those still costs 1m
 	}
 
 	@Test
@@ -284,6 +309,158 @@ public class RebuildSessionTest
 		assertEquals(Long.valueOf(1_000_000), custom.get("fire cape"));
 		assertEquals(Long.valueOf(5_000_000), custom.get("infernal cape"));
 		assertEquals(Long.valueOf(250_000), custom.get("fighter torso"));
+	}
+
+	@Test
+	public void customCostsKeepCommasInsideNumbers()
+	{
+		// the reported bug: "1,000,000" used to become 1 gp
+		Map<String, Long> custom = PerduCosts.parseCustom("Fire cape: 1,000,000, Infernal cape: 5,500,000\nVoid knight top: 750,000");
+		assertEquals(Long.valueOf(1_000_000), custom.get("fire cape"));
+		assertEquals(Long.valueOf(5_500_000), custom.get("infernal cape"));
+		assertEquals(Long.valueOf(750_000), custom.get("void knight top"));
+	}
+
+	@Test
+	public void eatenStartingFoodStaysOwedUntilReplaced()
+	{
+		// start with 20 sharks, eat 3, cook 2 new ones, deposit all 19
+		final int SHARK = 385;
+		RebuildSession s = RebuildSession.start(0);
+		s.oweCarried(bank(SHARK, 20), STRICT);
+		s.applyRealBank(bank(), STRICT);
+
+		List<RebuildSession.Change> c = s.applyRealBank(bank(SHARK, 19), STRICT);
+		assertEquals(19, c.get(0).repaid); // all go towards the 20 owed
+		assertEquals(0, s.count(SHARK));
+		assertEquals(1, s.getOwed().get(SHARK).longValue()); // still owe 1
+
+		s.applyRealBank(bank(SHARK, 23), STRICT); // 4 more new sharks
+		assertTrue(s.getOwed().isEmpty()); // the first one pays off the debt
+		assertEquals(3, s.count(SHARK)); // the other 3 count
+	}
+
+	@Test
+	public void spendingStartingCoinsDoesNotBuyProgress()
+	{
+		// the loophole: carry 10m, spend it on a whip outside the bank, deposit the whip
+		RebuildSession s = RebuildSession.start(0);
+		s.oweCarried(bank(COINS, 10_000_000), STRICT);
+		s.applyRealBank(bank(), STRICT);
+		s.applyRealBank(bank(WHIP, 1), STRICT); // deposit the whip bought with real-bank coins
+		assertEquals(1, s.count(WHIP)); // the whip is in the temp bank...
+		assertEquals(10_000_000, s.getOwed().get(COINS).longValue()); // ...but the 10m is still owed
+		assertEquals(10_000_000, s.owedValue(id -> id == COINS ? 1 : 0));
+		// and the whip doesn't count as progress while the 10m is owed
+		assertEquals(0, s.netValue(id -> id == COINS ? 1 : id == WHIP ? 2_000_000 : 0));
+
+		s.applyRealBank(bank(WHIP, 1, COINS, 10_000_000), STRICT); // pay the 10m back
+		assertEquals(2_000_000, s.netValue(id -> id == COINS ? 1 : id == WHIP ? 2_000_000 : 0));
+	}
+
+	@Test
+	public void withdrawOptionAmounts()
+	{
+		assertEquals(22_000_000, RebuildSession.requestedAmount("Withdraw-All", 22_000_000));
+		assertEquals(21_999_999, RebuildSession.requestedAmount("Withdraw-All-but-1", 22_000_000));
+		assertEquals(10, RebuildSession.requestedAmount("Withdraw-10", 22_000_000));
+		assertEquals(500, RebuildSession.requestedAmount("Withdraw-500", 22_000_000)); // last-X amount
+		assertEquals(-1, RebuildSession.requestedAmount("Withdraw-X", 22_000_000)); // prompt: unknown
+	}
+
+	@Test
+	public void withdrawBlockingRule()
+	{
+		// temp bank has 30k coins, real stack is 22m
+		assertTrue(RebuildSession.overdraws(22_000_000, 22_000_000, 30_000)); // Withdraw-All: blocked
+		assertTrue(RebuildSession.overdraws(21_999_999, 22_000_000, 30_000)); // All-but-1: blocked
+		assertFalse(RebuildSession.overdraws(10, 22_000_000, 30_000)); // Withdraw-10: fine
+		assertFalse(RebuildSession.overdraws(30_000, 22_000_000, 30_000)); // exactly what you have: fine
+		assertFalse(RebuildSession.overdraws(-1, 22_000_000, 30_000)); // Withdraw-X with something to take: allowed
+		assertTrue(RebuildSession.overdraws(-1, 22_000_000, 0)); // Withdraw-X with nothing in the temp bank: blocked
+		assertFalse(RebuildSession.overdraws(1_000, 500, 600)); // asking for more than the real bank has
+	}
+
+	@Test
+	public void canUnlockNowChecksOneItem()
+	{
+		RebuildSession.Policy free = policy(UntradeableMode.ALLOWED, 0, false, 0);
+		RebuildSession s = RebuildSession.start(0);
+		s.applyRealBank(bank(FIRE_CAPE, 1), free);
+		assertTrue(s.canUnlockNow(FIRE_CAPE, free));
+		assertFalse(s.canUnlockNow(TORSO, free)); // not in the pool
+		assertFalse(s.canUnlockNow(FIRE_CAPE, STRICT)); // unlocking turned off
+		s.unlock(FIRE_CAPE, free);
+		assertFalse(s.canUnlockNow(FIRE_CAPE, free)); // already unlocked
+	}
+
+	@Test
+	public void lootingBagIsAlwaysYours()
+	{
+		final int LOOTING_BAG = 11941;
+		RebuildSession.Policy bagPolicy = new RebuildSession.Policy()
+		{
+			public boolean alwaysYours(int id)
+			{
+				return id == LOOTING_BAG;
+			}
+
+			public boolean isUntradeable(int id)
+			{
+				return id == LOOTING_BAG || UNTRADEABLE.contains(id);
+			}
+
+			public boolean isUnlockable(int id)
+			{
+				return false; // like "Combat gear": a looting bag would never be offered
+			}
+
+			public UntradeableMode untradeableMode()
+			{
+				return UntradeableMode.REPAIR_COST;
+			}
+
+			public long untradeableCost(int id)
+			{
+				return 1_000_000;
+			}
+
+			public boolean buyTradeables()
+			{
+				return false;
+			}
+
+			public long tradeablePrice(int id)
+			{
+				return 0;
+			}
+		};
+
+		// one in the bank at Start: it's yours, not locked away
+		RebuildSession inBank = RebuildSession.start(0);
+		inBank.applyRealBank(bank(LOOTING_BAG, 1, FIRE_CAPE, 1), bagPolicy);
+		assertEquals(1, inBank.count(LOOTING_BAG));
+		assertEquals(0, inBank.poolCount(LOOTING_BAG));
+		assertEquals(1, inBank.poolCount(FIRE_CAPE)); // other untradeables still locked
+		assertEquals(1, inBank.withdrawable(LOOTING_BAG, bagPolicy)); // you can take it out
+
+		// carried at Start: not owed or locked, and depositing it adds it to the temp bank
+		RebuildSession carried = RebuildSession.start(0);
+		assertEquals(0, carried.oweCarried(bank(LOOTING_BAG, 1), bagPolicy));
+		carried.applyRealBank(bank(), bagPolicy);
+		assertTrue(carried.getOwed().isEmpty());
+		carried.applyRealBank(bank(LOOTING_BAG, 1), bagPolicy);
+		assertEquals(1, carried.count(LOOTING_BAG));
+	}
+
+	@Test
+	public void stackNumbersLikeTheGame()
+	{
+		assertEquals("5", Amounts.stackFormat(5));
+		assertEquals("99999", Amounts.stackFormat(99_999));
+		assertEquals("100K", Amounts.stackFormat(100_000));
+		assertEquals("9999K", Amounts.stackFormat(9_999_999));
+		assertEquals("22M", Amounts.stackFormat(22_772_817));
 	}
 
 	@Test
