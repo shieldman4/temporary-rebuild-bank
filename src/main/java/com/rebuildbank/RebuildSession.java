@@ -67,6 +67,8 @@ public class RebuildSession
 
 	// ---- persisted state (Gson) ----
 	long startedAtMillis;
+	/** When this run was last saved; used to pick the newest of the settings copy and the backup file. */
+	long savedAtMillis;
 	long ticks;
 	/** Tick count when the goal was reached, or -1. */
 	long completedAtTicks = -1;

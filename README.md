@@ -6,21 +6,25 @@ Your real bank is never touched. The plugin only changes what you see in the ban
 
 | Your temporary bank | Side panel with a goal |
 |---|---|
-| ![Temporary bank in the bank interface](images/temporary-bank.gif) | ![Side panel with goal, stats and items](images/side-panel.gif) |
+| ![Temporary bank in the bank interface, with the view button next to the ?](images/temporary-bank.webp) | ![Side panel with a goal, time limit and stats](images/side-panel.gif) |
 
 ## Features
 
 ### A fresh, empty bank
+<img src="images/getting-started.gif" alt="Starting a temporary bank from the side panel" align="right" width="200">
+
 - Press **Start new temporary bank** in the side panel (chest icon). Everything you own now counts as your hidden "real bank", and the bank interface shows only your temporary bank, laid out without gaps. The bank title shows its value.
 - **Deposits** go into the temporary bank. **Withdrawals** come out of it first.
-- **Real bank / Temp bank** button in the bank's title bar switches between the two views at any time. A checkbox in the side panel does the same.
+- **View switch:** a small button next to the bank's "?" switches between your temporary and real bank at any time. In the temporary view it shows gold coins (switch to your real bank); in the real view it shows the plugin's chest with green arrows (switch back). A checkbox in the side panel does the same.
 - **Withdraw-All** never takes your real stack. If your temporary bank has less, the click is blocked and a chat message tells you which option takes exactly what you own (Withdraw-1/5/10/your last X, or Withdraw-X and the number to type).
 - In the temp bank view, withdrawals that would dip into your real bank are blocked. In the real bank view nothing is blocked. If one gets through anyway (e.g. typing a too-big Withdraw-X), the extra is **owed**. It shows in red at the top of the temporary bank ("You owe your real bank") and in the side panel and overlay. Depositing it pays the debt back first, so only what was really yours counts towards the temporary bank.
 
-### Untradeables
-Untradeables already in your bank sit **locked** below a divider at the bottom of the temporary bank. Click one and choose **Unlock** to move it into your temporary bank.
+<br clear="right">
 
-![A fresh temporary bank with a locked untradeable below the divider](images/untradeables.gif)
+### Untradeables
+Untradeables already in your bank sit **locked** below a divider at the bottom of the temporary bank. Right-click one and choose **Unlock** to move it into your temporary bank.
+
+<img src="images/untradeables.webp" alt="Temporary bank with locked untradeables below the divider" width="430">
 
 - **Unlock cost**:
   - *Locked*: they can't be unlocked.
@@ -38,28 +42,26 @@ Untradeables already in your bank sit **locked** below a divider at the bottom o
 - **Charged, degraded or combined versions of tradeable gear** (abyssal tentacle, bowfa, crystal armour, degraded barrows, charged Tumeken's shadow...) are treated as normal items and valued from their tradeable parts.
 
 ### Goals, timer and stats
-<img src="images/timer-overlay.gif" alt="In-game timer overlay counting down" align="right" width="230">
+<img src="images/timer-overlay.png" alt="In-game timer overlay" align="right" width="230">
 
 - **Goals**: temporary bank value, coins, or a quantity of any item. The side panel shows a progress bar. Reaching the goal stops the timer and sends a chat message and notification with your time and GP/hr.
 - **In-game timer**: counts in-game time only (game ticks), and pauses while you're logged out.
 - **Time limit**: set it in the side panel (minutes, 0 = none).
 - **Timer overlay**: time left on your time limit, time elapsed, net value, GP/hr, goal progress and PK stats. It flashes slowly red when the time limit runs out. Hold Alt and drag to move it.
 - **Player kills**: once you get a PK, the number of kills and the average kill value are shown. Kills with ground loot and kills with loot keys both count; a loot key's value is added when you open the loot chest.
-- **GP/hr** = net value ÷ in-game time. **Net value** = temporary bank value minus any debt.
+- **GP/hr** = net value ÷ in-game time. **Net value** = what your temporary bank is worth (anything owed to your real bank isn't counted).
 
 <br clear="right">
 
 ### Other settings
-<img src="images/settings.png" alt="Plugin settings" align="right" width="200">
-
 - **Buy from hidden bank**: allows withdrawing tradeables from your real bank, paying their GE price with temporary bank coins. Only as many as your coins can pay for; anything beyond that is owed. Coins themselves can never be bought.
 - **Don't count starting items**: tradeables you're wearing or carrying when you press Start go back to your real bank when deposited, instead of counting as progress.
 - **Value untradeables**: counts untradeables at their high alch value. When off, they count as 0 gp.
 
-<br clear="right">
-
 ### Logging in and out
 Each account has its own temporary bank, saved in your RuneLite profile. Changes made while the plugin wasn't watching (another client, mobile, a deposit box) are picked up the next time you open the bank.
+
+As a safety net, every save is also written straight away to a small backup file in the plugin's own RuneLite folder (`.runelite/plugin-data/temporary-rebuild-bank`). If RuneLite is closed abruptly before it saves its settings, your run is restored from the backup when you log back in.
 
 ## Known limitations
 - Potion storage, the seed vault and group storage aren't tracked.

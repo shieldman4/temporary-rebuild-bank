@@ -3,6 +3,10 @@ package com.rebuildbank;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 import com.google.inject.Provides;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.awt.Color;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -10,6 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ScheduledExecutorService;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
 import lombok.Getter;
@@ -25,15 +30,20 @@ import net.runelite.api.ScriptID;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
+import net.runelite.api.MenuAction;
+import net.runelite.api.MenuEntry;
+import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.widgets.WidgetPositionMode;
 import net.runelite.client.events.PlayerLootReceived;
 import net.runelite.client.game.ItemStack;
+import net.runelite.client.game.SpriteManager;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.SpriteID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.ItemQuantityMode;
 import net.runelite.api.widgets.JavaScriptCallback;
@@ -58,29 +68,37 @@ import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ColorUtil;
+import net.runelite.client.util.Filepath;
 import net.runelite.client.util.ImageUtil;
 import net.runelite.client.util.Text;
 
 @Slf4j
 @PluginDescriptor(
 	name = "Temporary Rebuild Bank",
+	internalName = "temporary-rebuild-bank",
 	description = "Rebuild challenge: hide your bank and build a fresh one from 0 gp, with goals, in-game timer, GP/hr, PK stats and untradeable unlocks",
 	tags = {"rebuild", "challenge", "fresh start", "restart", "series", "youtube", "content", "bank", "empty bank", "gp", "gp/hr", "timer", "goal", "pk", "pvp", "untradeable", "wealth"}
 )
 public class RebuildBankPlugin extends Plugin
 {
 	private static final String SESSION_KEY = "session";
+	private static final String BACKUP_SUFFIX = ".json";
 	private static final int SAVE_EVERY_TICKS = 100; // 1 minute
 	private static final Color CHAT_COLOR = new Color(0x00, 0x60, 0xA0);
 
 	// Bank title-bar toggle
 	private static final String TOGGLE_NAME = "<col=ff9040>Temporary Bank</col>";
-	private static final int TOGGLE_COLOR = 0xff981f;
-	private static final int TOGGLE_HOVER_COLOR = 0xffffff;
-	private static final int TOGGLE_BG = 0x3e3529;
-	private static final int TOGGLE_BG_HOVER = 0x5a4d3c;
-	private static final int TOGGLE_BORDER = 0x0e0e0c;
-	private static final int TOGGLE_WIDTH = 72;
+	private static final String TOGGLE_BUTTON = TOGGLE_NAME + "button";
+	private static final String TOGGLE_ICON = TOGGLE_NAME + "icon";
+	private static final String TOGGLE_TINT = TOGGLE_NAME + "tint";
+	private static final int TOGGLE_TINT_COLOR = 0xb08a1a;
+	/** 0 = solid, 255 = invisible */
+	private static final int TOGGLE_TINT_OPACITY = 120;
+	private static final int TOGGLE_TINT_INSET = 4;
+	private static final int TOGGLE_ICON_SIZE = 17;
+	private static final int TOGGLE_GAP = 3;
+	private static final int TITLE_CHAR_WIDTH_ESTIMATE = 7;
+	private static final int LABEL_COLOR = 0xff981f;
 	private static final int FONT_PLAIN_11 = FontID.PLAIN_11;
 
 	// Divider between your temporary bank and the locked untradeables
@@ -156,6 +174,13 @@ public class RebuildBankPlugin extends Plugin
 	private OverlayManager overlayManager;
 
 	@Inject
+	private SpriteManager spriteManager;
+
+	/** RuneLite's background thread, used for the backup file so the game never waits on disk. */
+	@Inject
+	private ScheduledExecutorService executor;
+
+	@Inject
 	private TimerOverlay timerOverlay;
 
 	/** Values the overlay draws every frame, refreshed whenever the panel is. */
@@ -192,12 +217,14 @@ public class RebuildBankPlugin extends Plugin
 			.build();
 		clientToolbar.addNavigation(navButton);
 		overlayManager.add(timerOverlay);
+		spriteManager.addSpriteOverrides(ToggleSprites.values());
 
 		clientThread.invokeLater(() ->
 		{
 			if (client.getGameState() == GameState.LOGGED_IN)
 			{
 				loadSession();
+				checkBackup();
 			}
 			refreshPanel();
 		});
@@ -218,6 +245,7 @@ public class RebuildBankPlugin extends Plugin
 		});
 		clientToolbar.removeNavigation(navButton);
 		overlayManager.remove(timerOverlay);
+		spriteManager.removeSpriteOverrides(ToggleSprites.values());
 		panel = null;
 		navButton = null;
 	}
@@ -287,6 +315,7 @@ public class RebuildBankPlugin extends Plugin
 			if (profileKey != null)
 			{
 				configManager.unsetConfiguration(RebuildBankConfig.GROUP, profileKey, SESSION_KEY);
+				deleteBackup(profileKey);
 			}
 			rebuildBankInterface();
 			refreshPanel();
@@ -361,6 +390,7 @@ public class RebuildBankPlugin extends Plugin
 	{
 		saveSession();
 		loadSession();
+		checkBackup();
 		rebuildBankInterface();
 		refreshPanel();
 	}
@@ -382,6 +412,7 @@ public class RebuildBankPlugin extends Plugin
 		else if (state == GameState.LOGGED_IN && session == null)
 		{
 			loadSession();
+			checkBackup();
 			refreshPanel();
 		}
 	}
@@ -430,6 +461,42 @@ public class RebuildBankPlugin extends Plugin
 		refreshPanel();
 	}
 
+	/**
+	 * Adds a client-only "Unlock" option to locked untradeables in the temp bank view.
+	 * It's a MenuAction.RUNELITE entry, so it never reaches the server, and the bank's
+	 * own options are left exactly as they are.
+	 */
+	@Subscribe
+	public void onMenuEntryAdded(MenuEntryAdded e)
+	{
+		MenuEntry entry = e.getMenuEntry();
+		if (session == null || session.baselinePending || !config.showRebuildView()
+			|| entry.getParam1() != InterfaceID.Bankmain.ITEMS
+			|| entry.getType() != MenuAction.CC_OP || entry.getIdentifier() != 1)
+		{
+			return; // only once per bank item, on its first game option
+		}
+		ItemContainer bank = client.getItemContainer(InventoryID.BANK);
+		Item slot = bank != null ? bank.getItem(entry.getParam0()) : null;
+		if (slot == null || slot.getId() <= 0)
+		{
+			return;
+		}
+		final int itemId = itemManager.canonicalize(slot.getId());
+		RebuildSession.Policy policy = policy();
+		if (session.count(itemId) > 0 || !session.unlockable(policy).containsKey(itemId))
+		{
+			return;
+		}
+		long cost = session.unlockFee(itemId, policy);
+		client.createMenuEntry(1)
+			.setOption(UNLOCK_OPTION)
+			.setTarget("<col=ff9040>" + itemManager.getItemComposition(itemId).getName() + "</col> <col=ffff00>("
+				+ (cost == 0 ? "free" : Amounts.shortFormat(cost) + " temp coins") + ")</col>")
+			.setType(MenuAction.RUNELITE)
+			.onClick(m -> unlockItem(itemId));
+	}
+
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked e)
 	{
@@ -438,16 +505,6 @@ public class RebuildBankPlugin extends Plugin
 			return;
 		}
 		String option = e.getMenuOption() == null ? null : Text.removeTags(e.getMenuOption());
-		if (UNLOCK_OPTION.equals(option))
-		{
-			// Our own option on a locked untradeable: it must never reach the game
-			e.consume();
-			if (session != null && !session.baselinePending)
-			{
-				unlockItem(clickedItem(e));
-			}
-			return;
-		}
 		if (session == null || session.baselinePending)
 		{
 			return;
@@ -471,7 +528,7 @@ public class RebuildBankPlugin extends Plugin
 		if (session.count(itemId) <= 0 && session.unlockable(policy).containsKey(itemId))
 		{
 			e.consume();
-			chat("Unlock " + itemManager.getItemComposition(itemId).getName() + " first (click it in your temporary bank).");
+			chat("Unlock " + itemManager.getItemComposition(itemId).getName() + " first - right-click it and choose Unlock.");
 			return;
 		}
 		long allowed = session.withdrawable(itemId, policy);
@@ -749,13 +806,10 @@ public class RebuildBankPlugin extends Plugin
 			}
 			else
 			{
-				long cost = session.unlockFee(canon, policy);
+				// Locked: faded. Its game options are left alone; "Unlock" is added to the
+				// right-click menu as a client-only entry (see onMenuEntryAdded).
 				c.setItemQuantity((int) Math.min(Integer.MAX_VALUE, lockedQty));
 				c.setOpacity(110);
-				c.clearActions();
-				c.setAction(0, UNLOCK_OPTION);
-				c.setName("<col=ff9040>" + def.getName() + "</col> <col=ffff00>("
-					+ (cost == 0 ? "free" : Amounts.shortFormat(cost) + " temp coins") + ")</col>");
 				locked.add(c);
 			}
 		}
@@ -784,7 +838,7 @@ public class RebuildBankPlugin extends Plugin
 				sepText.setTextShadowed(true);
 				sepText.setXTextAlignment(WidgetTextAlignment.CENTER);
 				sepText.setYTextAlignment(WidgetTextAlignment.CENTER);
-				sepText.setTextColor(TOGGLE_COLOR);
+				sepText.setTextColor(LABEL_COLOR);
 			}
 			sepText.setText(policy.untradeableMode() == UntradeableMode.ALLOWED
 				? "Untradeables - click to unlock (free)"
@@ -969,7 +1023,11 @@ public class RebuildBankPlugin extends Plugin
 		}
 	}
 
-	/** Stone-style "Real bank / Temp bank" switch in the bank's title bar. */
+	/**
+	 * Small square stone button next to the bank's "?" button, in the same style as the
+	 * bank's wrench and "?" buttons. Its icon shows the view it switches to: a chest for
+	 * the temporary bank, coins for the real bank.
+	 */
 	private void updateToggleButton()
 	{
 		Widget universe = client.getWidget(InterfaceID.Bankmain.UNIVERSE);
@@ -979,91 +1037,108 @@ public class RebuildBankPlugin extends Plugin
 			return;
 		}
 
-		Widget bg = findNamed(universe, TOGGLE_NAME + "bg");
-		Widget border = findNamed(universe, TOGGLE_NAME + "border");
-		Widget label = findNamed(universe, TOGGLE_NAME);
+		// widgets from older versions of the button (text label, rectangles)
+		hide(findNamed(universe, TOGGLE_NAME));
+		hide(findNamed(universe, TOGGLE_NAME + "bg"));
+		hide(findNamed(universe, TOGGLE_NAME + "border"));
 
+		// The button has no name (the game would show it in the mouse-over text),
+		// so it's found by reference; the tint and icon have no actions and keep names.
+		hide(findNamed(universe, TOGGLE_BUTTON)); // named button from an older version
+		Widget button = isChildOf(toggleButton, universe) ? toggleButton : null;
+		Widget tint = findNamed(universe, TOGGLE_TINT);
+		Widget icon = findNamed(universe, TOGGLE_ICON);
 		if (session == null || session.baselinePending)
 		{
-			hide(bg);
-			hide(border);
-			hide(label);
+			hide(button);
+			hide(tint);
+			hide(icon);
 			restoreTitle();
 			return;
 		}
 
-		if (bg == null)
+		if (button == null || tint == null || icon == null)
 		{
-			bg = universe.createChild(-1, WidgetType.RECTANGLE);
-			bg.setName(TOGGLE_NAME + "bg");
-			bg.setFilled(true);
-			bg.setTextColor(TOGGLE_BG);
-		}
-		if (border == null)
-		{
-			border = universe.createChild(-1, WidgetType.RECTANGLE);
-			border.setName(TOGGLE_NAME + "border");
-			border.setFilled(false);
-			border.setTextColor(TOGGLE_BORDER);
-		}
-		if (label == null)
-		{
-			label = universe.createChild(-1, WidgetType.TEXT);
-			label.setName(TOGGLE_NAME);
-			label.setFontId(FONT_PLAIN_11);
-			label.setTextShadowed(true);
-			label.setXTextAlignment(WidgetTextAlignment.CENTER);
-			label.setYTextAlignment(WidgetTextAlignment.CENTER);
-			label.setTextColor(TOGGLE_COLOR);
-			label.setHasListener(true);
-			final Widget l = label;
-			final Widget b = bg;
-			label.setOnMouseOverListener((JavaScriptCallback) ev ->
-			{
-				l.setTextColor(TOGGLE_HOVER_COLOR);
-				b.setTextColor(TOGGLE_BG_HOVER);
-			});
-			label.setOnMouseLeaveListener((JavaScriptCallback) ev ->
-			{
-				l.setTextColor(TOGGLE_COLOR);
-				b.setTextColor(TOGGLE_BG);
-			});
-			label.setOnOpListener((JavaScriptCallback) ev -> setViewEnabled(!config.showRebuildView()));
+			// (re)create all three so they're layered button -> tint -> icon
+			hide(button);
+			hide(tint);
+			hide(icon);
+			button = universe.createChild(-1, WidgetType.GRAPHIC);
+			toggleButton = button;
+			button.setSpriteId(SpriteID.Miscgraphics3.UNKNOWN_BUTTON_SQUARE_SMALL);
+			button.setHasListener(true);
+			final Widget b = button;
+			button.setOnMouseOverListener((JavaScriptCallback) ev ->
+				b.setSpriteId(SpriteID.Miscgraphics3.UNKNOWN_BUTTON_SQUARE_SMALL_SELECTED));
+			button.setOnMouseLeaveListener((JavaScriptCallback) ev ->
+				b.setSpriteId(SpriteID.Miscgraphics3.UNKNOWN_BUTTON_SQUARE_SMALL));
+			button.setOnOpListener((JavaScriptCallback) ev -> setViewEnabled(!config.showRebuildView()));
+
+			// see-through gold layer over the stone in the temp view; no actions, so clicks go to the button
+			tint = universe.createChild(-1, WidgetType.RECTANGLE);
+			tint.setName(TOGGLE_TINT);
+			tint.setFilled(true);
+			tint.setTextColor(TOGGLE_TINT_COLOR);
+			tint.setOpacity(TOGGLE_TINT_OPACITY);
+
+			icon = universe.createChild(-1, WidgetType.GRAPHIC);
+			icon.setName(TOGGLE_ICON);
 		}
 
-		// Sit just right of the bank's "?" button, matching its height
+		// Same size as the bank's "?" button, just to its right
 		net.runelite.api.Point uni = universe.getCanvasLocation();
 		Widget tut = client.getWidget(InterfaceID.Bankmain.BANK_TUT);
 		int x;
 		int y;
-		int h;
+		int size;
 		if (tut != null && !tut.isHidden())
 		{
-			x = tut.getCanvasLocation().getX() - uni.getX() + tut.getWidth() + 4;
+			x = tut.getCanvasLocation().getX() - uni.getX() + tut.getWidth() + TOGGLE_GAP;
 			y = tut.getCanvasLocation().getY() - uni.getY();
-			h = tut.getHeight();
+			size = tut.getHeight();
 		}
 		else
 		{
 			x = 60;
 			y = title.getCanvasLocation().getY() - uni.getY();
-			h = Math.max(18, title.getHeight());
+			size = Math.max(18, title.getHeight());
 		}
-		for (Widget w : new Widget[]{bg, border, label})
-		{
-			w.setOriginalX(x);
-			w.setOriginalY(y);
-			w.setOriginalWidth(TOGGLE_WIDTH);
-			w.setOriginalHeight(h);
-			w.setHidden(false);
-			w.revalidate();
-		}
+		place(button, x, y, size, size);
+		int iconSize = Math.min(TOGGLE_ICON_SIZE, size);
+		place(icon, x + (size - iconSize) / 2, y + (size - iconSize) / 2, iconSize, iconSize);
 
 		boolean tempView = config.showRebuildView();
-		label.setText(tempView ? "Real bank" : "Temp bank");
-		label.setAction(0, tempView ? "Switch to real bank" : "Switch to temporary bank");
+		// inset past the stone button's raised border so only its flat face is tinted
+		place(tint, x + TOGGLE_TINT_INSET, y + TOGGLE_TINT_INSET,
+			size - 2 * TOGGLE_TINT_INSET, size - 2 * TOGGLE_TINT_INSET);
+		tint.setHidden(!tempView);
+		icon.setSpriteId(tempView ? ToggleSprites.SHOW_REAL.getSpriteId() : ToggleSprites.SHOW_TEMP.getSpriteId());
+		button.setAction(0, tempView ? "Show real bank" : "Show temp bank");
 
-		makeRoomInTitle(title, x + TOGGLE_WIDTH + 6 + uni.getX());
+		makeRoomInTitle(title, x + size + TOGGLE_GAP + uni.getX());
+	}
+
+	/** Our view button; it's unnamed so the mouse-over text is just "Show real bank". */
+	private Widget toggleButton;
+
+	private static boolean isChildOf(Widget w, Widget parent)
+	{
+		if (w == null)
+		{
+			return false;
+		}
+		Widget[] dynamic = parent.getDynamicChildren();
+		if (dynamic != null)
+		{
+			for (Widget c : dynamic)
+			{
+				if (c == w)
+				{
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	/** The bank title widget we moved, and where it was, so it can be put back. */
@@ -1085,13 +1160,15 @@ public class RebuildBankPlugin extends Plugin
 		title.setOriginalX(movedTitleBaseX);
 		title.revalidate();
 
-		String text = title.getText();
-		if (text == null || title.getFont() == null)
+		String text = title.getText() == null ? "" : Text.removeTags(title.getText());
+		if (text.isEmpty())
 		{
 			return;
 		}
-		int plain = text.replaceAll("<[^>]*>", "").length() == 0 ? 0 : title.getFont().getTextWidth(text.replaceAll("<[^>]*>", ""));
-		int textLeft = title.getCanvasLocation().getX() + (title.getWidth() - plain) / 2;
+		int textWidth = title.getFont() != null
+			? title.getFont().getTextWidth(text)
+			: text.length() * TITLE_CHAR_WIDTH_ESTIMATE;
+		int textLeft = title.getCanvasLocation().getX() + (title.getWidth() - textWidth) / 2;
 		int shift = minTextCanvasX - textLeft;
 		if (shift <= 0)
 		{
@@ -1459,14 +1536,126 @@ public class RebuildBankPlugin extends Plugin
 		{
 			return;
 		}
+		session = parseSession(json);
+	}
+
+	private RebuildSession parseSession(String json)
+	{
+		if (json == null || json.isEmpty())
+		{
+			return null;
+		}
 		try
 		{
-			session = gson.fromJson(json, RebuildSession.class);
+			return gson.fromJson(json, RebuildSession.class);
 		}
 		catch (JsonSyntaxException ex)
 		{
 			log.warn("Couldn't read saved rebuild session", ex);
+			return null;
 		}
+	}
+
+	// ------------------------------------------------------------------ backup file (safety net)
+	//
+	// RuneLite only writes its settings to disk every few minutes and when it closes
+	// normally, so if it's killed, recent progress could be lost. Every save is also
+	// written straight away to a small backup file in this plugin's own data folder
+	// (.runelite/plugin-data/temporary-rebuild-bank), on RuneLite's background thread.
+	// On login, whichever copy was saved most recently is used.
+
+	private Filepath backupFile(String rsProfileKey) throws IOException
+	{
+		return getPluginDirectory().join(rsProfileKey + BACKUP_SUFFIX);
+	}
+
+	private void writeBackup(String rsProfileKey, String json)
+	{
+		executor.execute(() ->
+		{
+			try
+			{
+				getPluginDirectory().createDirectories();
+				Filepath target = backupFile(rsProfileKey);
+				Filepath temp = getPluginDirectory().join(rsProfileKey + BACKUP_SUFFIX + ".tmp");
+				temp.write(json, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+				// replace in one step, so a crash mid-write never leaves a broken backup
+				temp.moveTo(target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			}
+			catch (IOException ex)
+			{
+				log.warn("Couldn't write the temporary bank backup", ex);
+			}
+		});
+	}
+
+	private void deleteBackup(String rsProfileKey)
+	{
+		executor.execute(() ->
+		{
+			try
+			{
+				backupFile(rsProfileKey).deleteIfExists();
+			}
+			catch (IOException ex)
+			{
+				log.warn("Couldn't delete the temporary bank backup", ex);
+			}
+		});
+	}
+
+	/** After loading from settings, use the backup file instead if it's newer. */
+	private void checkBackup()
+	{
+		final String key = profileKey;
+		final RebuildSession loaded = session;
+		final long loadedSavedAt = loaded != null ? loaded.savedAtMillis : -1;
+		if (key == null)
+		{
+			return;
+		}
+		executor.execute(() ->
+		{
+			String json;
+			try
+			{
+				Filepath file = backupFile(key);
+				if (!file.exists())
+				{
+					return;
+				}
+				StringBuilder sb = new StringBuilder();
+				try (BufferedReader r = file.openBufferedReader())
+				{
+					for (String line; (line = r.readLine()) != null; )
+					{
+						sb.append(line);
+					}
+				}
+				json = sb.toString();
+			}
+			catch (IOException ex)
+			{
+				log.warn("Couldn't read the temporary bank backup", ex);
+				return;
+			}
+			clientThread.invoke(() ->
+			{
+				RebuildSession backup = parseSession(json);
+				// only if nothing changed while we were reading, and the backup is newer
+				if (backup == null || !key.equals(profileKey) || session != loaded
+					|| (loaded != null && loaded.savedAtMillis != loadedSavedAt)
+					|| backup.savedAtMillis <= loadedSavedAt)
+				{
+					return;
+				}
+				session = backup;
+				log.debug("Restored temporary bank from backup for {}", key);
+				saveSession();
+				rebuildBankInterface();
+				refreshPanel();
+			});
+		});
 	}
 
 	private void saveSession()
@@ -1475,7 +1664,10 @@ public class RebuildBankPlugin extends Plugin
 		{
 			return;
 		}
-		configManager.setConfiguration(RebuildBankConfig.GROUP, profileKey, SESSION_KEY, gson.toJson(session));
+		session.savedAtMillis = System.currentTimeMillis();
+		String json = gson.toJson(session);
+		configManager.setConfiguration(RebuildBankConfig.GROUP, profileKey, SESSION_KEY, json);
+		writeBackup(profileKey, json);
 	}
 
 	/** Builds a snapshot on the client thread and hands it to the panel. */
