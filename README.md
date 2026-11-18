@@ -6,7 +6,7 @@ Your real bank is never touched. The plugin only changes what you see in the ban
 
 | Your temporary bank | Side panel with a goal |
 |---|---|
-| ![Temporary bank in the bank interface, with the view button next to the ?](images/temporary-bank.webp) | ![Side panel with a goal, time limit and stats](images/side-panel.gif) |
+| ![Temporary bank in the bank interface, with the view button next to the ?](images/temporary-bank.gif) | ![Side panel with a goal, time limit and stats](images/side-panel.gif) |
 
 ## Features
 
@@ -24,7 +24,7 @@ Your real bank is never touched. The plugin only changes what you see in the ban
 ### Untradeables
 Untradeables already in your bank sit **locked** below a divider at the bottom of the temporary bank. Right-click one and choose **Unlock** to move it into your temporary bank.
 
-<img src="images/untradeables.webp" alt="Temporary bank with locked untradeables below the divider" width="430">
+<img src="images/untradeables.gif" alt="Temporary bank with locked untradeables below the divider" width="430">
 
 - **Unlock cost**:
   - *Locked*: they can't be unlocked.
