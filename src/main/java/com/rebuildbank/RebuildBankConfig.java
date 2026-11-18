@@ -196,7 +196,8 @@ public interface RebuildBankConfig extends Config
 	@ConfigItem(
 		keyName = "timeLimitMinutes",
 		name = "Time limit",
-		description = "Counts down from this; when it hits zero the timer flashes. 0 = no limit.",
+		description = "Counts down from this; when it hits zero the timer flashes. 0 = no limit. Set it from the side panel.",
+		hidden = true,
 		position = 22,
 		section = overlaySection
 	)

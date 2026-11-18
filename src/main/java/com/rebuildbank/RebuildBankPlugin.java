@@ -21,8 +21,6 @@ import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.ItemContainer;
-import net.runelite.api.MenuAction;
-import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
@@ -37,6 +35,7 @@ import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.VarbitID;
+import net.runelite.api.widgets.ItemQuantityMode;
 import net.runelite.api.widgets.JavaScriptCallback;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetTextAlignment;
@@ -60,6 +59,7 @@ import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ColorUtil;
 import net.runelite.client.util.ImageUtil;
+import net.runelite.client.util.Text;
 
 @Slf4j
 @PluginDescriptor(
@@ -88,6 +88,10 @@ public class RebuildBankPlugin extends Plugin
 	private static final String SEPARATOR_TEXT = "<col=ff9040>Temporary Bank label</col>";
 	private static final int SEPARATOR_COLOR = 0x726451;
 	private static final String UNLOCK_OPTION = "Unlock";
+	/** Every widget this plugin creates has a name starting with this. */
+	private static final String WIDGET_PREFIX = "<col=ff9040>Temporary Bank";
+	private static final String OWED_PREFIX = WIDGET_PREFIX + " owed ";
+	private static final int OWED_COLOR = 0xff3030;
 	private static final int MIN_ROWS = 4;
 	private static final int SECTION_GAP = 12;
 
@@ -159,6 +163,8 @@ public class RebuildBankPlugin extends Plugin
 	private volatile long cachedNetValue;
 	@Getter
 	private volatile long cachedGoalProgress;
+	@Getter
+	private volatile long cachedOwedValue;
 
 	RebuildSession getSession()
 	{
@@ -177,7 +183,7 @@ public class RebuildBankPlugin extends Plugin
 		// Fill in any settings missing from the active RuneLite profile (e.g. a newly
 		// created one), otherwise the config panel can't show the dropdowns.
 		configManager.setDefaultConfiguration(config, false);
-		panel = new RebuildBankPanel(this, config.showRebuildView());
+		panel = new RebuildBankPanel(this, config.showRebuildView(), config.timeLimitMinutes());
 		navButton = NavigationButton.builder()
 			.tooltip("Temporary Rebuild Bank")
 			.icon(ImageUtil.loadImageResource(RebuildBankPlugin.class, "panel_icon.png"))
@@ -320,6 +326,11 @@ public class RebuildBankPlugin extends Plugin
 		});
 	}
 
+	void setTimeLimit(int minutes)
+	{
+		configManager.setConfiguration(RebuildBankConfig.GROUP, "timeLimitMinutes", Math.max(0, minutes));
+	}
+
 	void setViewEnabled(boolean enabled)
 	{
 		configManager.setConfiguration(RebuildBankConfig.GROUP, "showRebuildView", enabled);
@@ -332,9 +343,16 @@ public class RebuildBankPlugin extends Plugin
 	{
 		// switching RuneLite settings profiles: make sure this profile has our defaults too
 		configManager.setDefaultConfiguration(config, false);
-		if (panel != null)
+		RebuildBankPanel p = panel;
+		if (p != null)
 		{
-			SwingUtilities.invokeLater(() -> panel.setViewToggle(config.showRebuildView()));
+			boolean view = config.showRebuildView();
+			int limit = config.timeLimitMinutes();
+			SwingUtilities.invokeLater(() ->
+			{
+				p.setViewToggle(view);
+				p.setTimeLimit(limit);
+			});
 		}
 	}
 
@@ -419,14 +437,14 @@ public class RebuildBankPlugin extends Plugin
 		{
 			return;
 		}
-		String option = e.getMenuOption();
+		String option = e.getMenuOption() == null ? null : Text.removeTags(e.getMenuOption());
 		if (UNLOCK_OPTION.equals(option))
 		{
 			// Our own option on a locked untradeable: it must never reach the game
 			e.consume();
 			if (session != null && !session.baselinePending)
 			{
-				unlockItem(itemManager.canonicalize(e.getItemId()));
+				unlockItem(clickedItem(e));
 			}
 			return;
 		}
@@ -434,11 +452,16 @@ public class RebuildBankPlugin extends Plugin
 		{
 			return;
 		}
+		// Viewing the real bank: withdraw freely. Blocking resumes in the temp bank view.
+		if (!config.showRebuildView())
+		{
+			return;
+		}
 		if (option == null || !option.startsWith("Withdraw"))
 		{
 			return;
 		}
-		int itemId = itemManager.canonicalize(e.getItemId());
+		int itemId = clickedItem(e);
 		if (itemId <= 0)
 		{
 			return;
@@ -452,10 +475,6 @@ public class RebuildBankPlugin extends Plugin
 			return;
 		}
 		long allowed = session.withdrawable(itemId, policy);
-		if (allowed == Long.MAX_VALUE)
-		{
-			return;
-		}
 
 		ItemContainer bank = client.getItemContainer(InventoryID.BANK);
 		long real = bank != null ? bank.count(itemId) : 0;
@@ -474,34 +493,15 @@ public class RebuildBankPlugin extends Plugin
 			return;
 		}
 
-		// Withdraw-All / All-but-1 / a too-big number. RuneLite doesn't allow plugins to
-		// type into the chatbox, so: if one of the bank's own options withdraws exactly
-		// the right amount (1, 5, 10 or your last X amount) use that one; otherwise
-		// switch to Withdraw-X and say how many to type.
-		String label = "Withdraw-" + allowed;
-		MenuEntry exact = findMenuEntry(e.getParam0(), e.getParam1(), label);
-		MenuEntry target = exact != null ? exact : findMenuEntry(e.getParam0(), e.getParam1(), "Withdraw-X");
-		if (target == null)
-		{
-			e.consume();
-			chat("Your temporary bank has " + Amounts.format(allowed) + " x " + name + ". Use Withdraw-X for that amount.");
-			return;
-		}
-		// Changing the clicked entry doesn't change what the game does, so cancel this
-		// click and run the bank's own option instead (one click, one bank action).
+		// Withdraw-All / All-but-1 / a too-big number: block it, so the real stack never
+		// leaves the bank, and tell the player which option takes exactly what they own.
 		e.consume();
-		final int p0 = target.getParam0();
-		final int p1 = target.getParam1();
-		final MenuAction type = target.getType();
-		final int identifier = target.getIdentifier();
-		final int item = target.getItemId();
-		final String opt = target.getOption();
-		final String tgt = target.getTarget();
-		clientThread.invokeLater(() -> client.menuAction(p0, p1, type, identifier, item, opt, tgt));
-		if (exact == null)
-		{
-			chat("Your temporary bank has " + Amounts.format(allowed) + " x " + name + " - type " + allowed + ".");
-		}
+		long lastX = client.getVarbitValue(VarbitID.BANK_REQUESTEDQUANTITY);
+		boolean oneClick = allowed == 1 || allowed == 5 || allowed == 10 || allowed == lastX;
+		chat("Your temporary bank has " + Amounts.format(allowed) + " x " + name + " - "
+			+ (oneClick
+				? "use Withdraw-" + allowed + "."
+				: "use Withdraw-X and type " + allowed + "."), true);
 	}
 
 	// ------------------------------------------------------------------ player kills
@@ -587,6 +587,31 @@ public class RebuildBankPlugin extends Plugin
 		});
 	}
 
+	/**
+	 * The item on the clicked bank slot. Bank menu entries don't always carry an item
+	 * id, so read it from the clicked widget, falling back to the bank slot index.
+	 */
+	private int clickedItem(MenuOptionClicked e)
+	{
+		int id = -1;
+		Widget w = e.getWidget();
+		if (w != null)
+		{
+			id = w.getItemId();
+		}
+		if (id <= 0)
+		{
+			id = e.getItemId();
+		}
+		if (id <= 0)
+		{
+			ItemContainer bank = client.getItemContainer(InventoryID.BANK);
+			Item slot = bank != null ? bank.getItem(e.getParam0()) : null;
+			id = slot != null ? slot.getId() : -1;
+		}
+		return id > 0 ? itemManager.canonicalize(id) : -1;
+	}
+
 	private void unlockItem(int itemId)
 	{
 		if (session == null || itemId <= 0)
@@ -616,18 +641,6 @@ public class RebuildBankPlugin extends Plugin
 		refreshPanel();
 	}
 
-	private MenuEntry findMenuEntry(int param0, int param1, String option)
-	{
-		for (MenuEntry m : client.getMenu().getMenuEntries())
-		{
-			if (m.getParam0() == param0 && m.getParam1() == param1 && option.equals(m.getOption()))
-			{
-				return m;
-			}
-		}
-		return null;
-	}
-
 	@Subscribe
 	public void onScriptPostFired(ScriptPostFired e)
 	{
@@ -653,6 +666,14 @@ public class RebuildBankPlugin extends Plugin
 			}
 			clientThread.invokeLater(this::rebuildBankInterface);
 		}
+		else if ("timeLimitMinutes".equals(e.getKey()))
+		{
+			RebuildBankPanel p = panel;
+			if (p != null)
+			{
+				SwingUtilities.invokeLater(() -> p.setTimeLimit(config.timeLimitMinutes()));
+			}
+		}
 		else if (e.getKey().startsWith("untradeable") || "valueUntradeables".equals(e.getKey())
 			|| "customUntradeableCosts".equals(e.getKey()) || "defaultUntradeableCost".equals(e.getKey()))
 		{
@@ -676,6 +697,7 @@ public class RebuildBankPlugin extends Plugin
 		}
 		Widget sepLine = findNamed(container, SEPARATOR_LINE);
 		Widget sepText = findNamed(container, SEPARATOR_TEXT);
+		hideAll(container, OWED_PREFIX);
 		if (session == null || session.baselinePending || !config.showRebuildView())
 		{
 			hide(sepLine);
@@ -698,7 +720,7 @@ public class RebuildBankPlugin extends Plugin
 		Map<Integer, Boolean> seen = new HashMap<>();
 		for (Widget c : children)
 		{
-			if (c == null || c.isHidden() || c == sepLine || c == sepText)
+			if (c == null || c.isHidden() || isOurs(c))
 			{
 				continue;
 			}
@@ -741,12 +763,15 @@ public class RebuildBankPlugin extends Plugin
 		Comparator<Widget> order = Comparator.comparingInt(Widget::getOriginalY).thenComparingInt(Widget::getOriginalX);
 		owned.sort(order);
 		locked.sort(order);
-		int y = layoutGrid(owned, 0);
 		int gridWidth = (ITEMS_PER_ROW - 1) * ITEM_X_STEP + ITEM_WIDTH;
+
+		// Anything taken out of the real bank beyond the limit goes at the very top, in red
+		int ownedTop = layoutOwed(container, gridWidth);
+		int y = layoutGrid(owned, ownedTop);
 
 		// Your temporary bank always keeps at least 4 rows of room above the
 		// untradeables, empty or not, so there's space to see it fill up.
-		y = Math.max(y, MIN_ROWS * ITEM_Y_STEP);
+		y = Math.max(y, ownedTop + MIN_ROWS * ITEM_Y_STEP);
 
 		if (!locked.isEmpty())
 		{
@@ -809,6 +834,100 @@ public class RebuildBankPlugin extends Plugin
 		if (title != null)
 		{
 			title.setText("Temporary Bank - " + Amounts.format(session.netValue(this::unitValue)) + " gp");
+		}
+	}
+
+	/**
+	 * Draws the "owed to your real bank" section: a red label and each owed item
+	 * with a red "-amount". These are our own picture-only widgets with no click
+	 * actions. Returns the y where the temporary bank's own items start.
+	 */
+	private int layoutOwed(Widget container, int gridWidth)
+	{
+		Map<Integer, Long> owed = session.getOwed();
+		if (owed.isEmpty())
+		{
+			return 0;
+		}
+
+		Widget label = namedChild(container, OWED_PREFIX + "label", WidgetType.TEXT);
+		label.setFontId(FONT_PLAIN_11);
+		label.setTextShadowed(true);
+		label.setXTextAlignment(WidgetTextAlignment.CENTER);
+		label.setYTextAlignment(WidgetTextAlignment.CENTER);
+		label.setTextColor(OWED_COLOR);
+		label.setText("You owe your real bank - deposit these back");
+		place(label, ITEM_START_X, 0, gridWidth, 14);
+
+		int top = 18;
+		int i = 0;
+		List<Map.Entry<Integer, Long>> entries = new ArrayList<>(owed.entrySet());
+		entries.sort(Map.Entry.comparingByKey());
+		for (Map.Entry<Integer, Long> e : entries)
+		{
+			int x = ITEM_START_X + (i % ITEMS_PER_ROW) * ITEM_X_STEP;
+			int iy = top + (i / ITEMS_PER_ROW) * ITEM_Y_STEP;
+
+			Widget icon = namedChild(container, OWED_PREFIX + "item" + i, WidgetType.GRAPHIC);
+			icon.setItemId(e.getKey());
+			icon.setItemQuantity(1);
+			icon.setItemQuantityMode(ItemQuantityMode.NEVER);
+			icon.setOpacity(0);
+			place(icon, x, iy, ITEM_WIDTH, ITEM_HEIGHT);
+
+			Widget qty = namedChild(container, OWED_PREFIX + "qty" + i, WidgetType.TEXT);
+			qty.setFontId(FONT_PLAIN_11);
+			qty.setTextShadowed(true);
+			qty.setXTextAlignment(WidgetTextAlignment.LEFT);
+			qty.setYTextAlignment(WidgetTextAlignment.TOP);
+			qty.setTextColor(OWED_COLOR);
+			qty.setText("-" + Amounts.shortFormat(e.getValue()));
+			place(qty, x, iy - 1, ITEM_X_STEP, 12);
+			i++;
+		}
+		int rows = (i + ITEMS_PER_ROW - 1) / ITEMS_PER_ROW;
+		return top + rows * ITEM_Y_STEP + SECTION_GAP;
+	}
+
+	private static Widget namedChild(Widget parent, String name, int type)
+	{
+		Widget w = findNamed(parent, name);
+		if (w == null || w.getType() != type)
+		{
+			w = parent.createChild(-1, type);
+			w.setName(name);
+		}
+		return w;
+	}
+
+	private static void place(Widget w, int x, int y, int width, int height)
+	{
+		w.setOriginalX(x);
+		w.setOriginalY(y);
+		w.setOriginalWidth(width);
+		w.setOriginalHeight(height);
+		w.setHidden(false);
+		w.revalidate();
+	}
+
+	private static boolean isOurs(Widget w)
+	{
+		String name = w.getName();
+		return name != null && name.startsWith(WIDGET_PREFIX);
+	}
+
+	private static void hideAll(Widget parent, String prefix)
+	{
+		Widget[] dynamic = parent.getDynamicChildren();
+		if (dynamic != null)
+		{
+			for (Widget w : dynamic)
+			{
+				if (w != null && w.getName() != null && w.getName().startsWith(prefix))
+				{
+					w.setHidden(true);
+				}
+			}
 		}
 	}
 
@@ -1277,8 +1396,14 @@ public class RebuildBankPlugin extends Plugin
 			String name = itemManager.getItemComposition(c.itemId).getName();
 			if (c.violated > 0)
 			{
-				chat(ColorUtil.wrapWithColorTag("Rule break: ", Color.RED) + Amounts.format(c.violated) + " x " + name
-					+ " came out of your hidden real bank. Deposit it back to return it.", true);
+				chat(ColorUtil.wrapWithColorTag("You owe " + Amounts.format(c.violated) + " x " + name + "!", Color.RED)
+					+ " That came out of your real bank - deposit it back.", true);
+			}
+			if (c.repaid > 0)
+			{
+				long left = session != null ? session.getOwed().getOrDefault(c.itemId, 0L) : 0;
+				chat("Paid back " + Amounts.format(c.repaid) + " x " + name + " to your real bank"
+					+ (left > 0 ? " - still owe " + Amounts.format(left) + "." : ". All square!"), true);
 			}
 			if (c.unlocked > 0 && c.unlockCost > 0)
 			{
@@ -1392,6 +1517,7 @@ public class RebuildBankPlugin extends Plugin
 		long net = bankValue - session.spent;
 		long ticks = session.challengeTicks();
 		cachedNetValue = net;
+		cachedOwedValue = session.owedValue(this::unitValue);
 		cachedGoalProgress = session.goalProgress(this::unitValue, ItemID.COINS);
 		String status;
 		if (session.baselinePending)
@@ -1414,7 +1540,7 @@ public class RebuildBankPlugin extends Plugin
 			.time(RebuildSession.formatTicks(ticks))
 			.bankValue(bankValue)
 			.spent(session.paid)
-			.debt(session.spent)
+			.debt(session.spent + cachedOwedValue)
 			.netValue(net)
 			.gpPerHour(RebuildSession.gpPerHour(net, ticks))
 			.goalType(session.goalType)
@@ -1422,7 +1548,6 @@ public class RebuildBankPlugin extends Plugin
 			.goalProgress(session.goalProgress(this::unitValue, ItemID.COINS))
 			.goalItemName(session.goalItemName)
 			.complete(session.isComplete())
-			.borrowedCount(session.totalBorrowed())
 			.violations(session.violations)
 			.pkKills(session.pkKills)
 			.pkAverage(session.averageKillValue())

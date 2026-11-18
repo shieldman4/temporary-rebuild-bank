@@ -26,7 +26,6 @@ class PanelData
 	long goalProgress;
 	String goalItemName;
 	boolean complete;
-	long borrowedCount;
 	long violations;
 	long pkKills;
 	long pkAverage;

@@ -51,6 +51,7 @@ public class RebuildSession
 		public final int itemId;
 		public long deposited;
 		public long returned;
+		public long repaid;
 		public long withdrawn;
 		public long unlocked;
 		public long unlockCost;
@@ -72,7 +73,10 @@ public class RebuildSession
 	/** True until the first real bank snapshot after starting has been taken. */
 	boolean baselinePending;
 	Map<Integer, Long> items = new HashMap<>();
+	/** Tradeables you were carrying at the start: depositing them puts them back silently. */
 	Map<Integer, Long> borrowed = new HashMap<>();
+	/** Taken out of the real bank beyond what the temporary bank had: must be deposited back. */
+	Map<Integer, Long> owed = new HashMap<>();
 	/** Untradeables that were in the real bank when the run started. */
 	Map<Integer, Long> untradeablePool = new HashMap<>();
 	Map<Integer, Long> lastRealBank = new HashMap<>();
@@ -155,11 +159,17 @@ public class RebuildSession
 			Change c = new Change(id);
 			if (delta > 0)
 			{
-				long repay = Math.min(get(borrowed, id), delta);
+				long rest = delta;
+				long repaidOwed = Math.min(get(owed(), id), rest);
+				add(owed(), id, -repaidOwed);
+				rest -= repaidOwed;
+				long repay = Math.min(get(borrowed, id), rest);
 				add(borrowed, id, -repay);
-				add(items, id, delta - repay);
+				rest -= repay;
+				add(items, id, rest);
+				c.repaid = repaidOwed;
 				c.returned = repay;
-				c.deposited = delta - repay;
+				c.deposited = rest;
 			}
 			else
 			{
@@ -185,17 +195,23 @@ public class RebuildSession
 					}
 				}
 
-				if (rest > 0 && !policy.isUntradeable(id) && policy.buyTradeables())
+				if (rest > 0 && canBuy(id, policy))
 				{
-					c.bought = rest;
-					c.boughtCost = policy.tradeablePrice(id) * rest;
-					pay(c.boughtCost);
-					rest = 0;
+					// only as many as the temporary bank's coins can pay for
+					long price = policy.tradeablePrice(id);
+					long affordable = Math.min(rest, count(COINS) / price);
+					if (affordable > 0)
+					{
+						c.bought = affordable;
+						c.boughtCost = price * affordable;
+						pay(c.boughtCost);
+						rest -= affordable;
+					}
 				}
 
 				if (rest > 0)
 				{
-					add(borrowed, id, rest);
+					add(owed(), id, rest);
 					c.violated = rest;
 					violations++;
 				}
@@ -205,6 +221,36 @@ public class RebuildSession
 
 		lastRealBank = new HashMap<>(real);
 		return changes;
+	}
+
+	private static boolean canBuy(int id, Policy policy)
+	{
+		return id != COINS && !policy.isUntradeable(id) && policy.buyTradeables() && policy.tradeablePrice(id) > 0;
+	}
+
+	private Map<Integer, Long> owed()
+	{
+		if (owed == null)
+		{
+			owed = new HashMap<>(); // sessions saved by older versions
+		}
+		return owed;
+	}
+
+	/** Items taken from the real bank that must be deposited back (id -> quantity). */
+	public Map<Integer, Long> getOwed()
+	{
+		return Collections.unmodifiableMap(owed());
+	}
+
+	public long owedValue(IntToLongFunction unitPrice)
+	{
+		long total = 0;
+		for (Map.Entry<Integer, Long> e : owed().entrySet())
+		{
+			total += unitPrice.applyAsLong(e.getKey()) * e.getValue();
+		}
+		return total;
 	}
 
 	private static boolean canUnlock(int id, Policy policy)
@@ -320,11 +366,13 @@ public class RebuildSession
 	/** How many of an item can be withdrawn without breaking the rules (Long.MAX_VALUE = unlimited). */
 	public long withdrawable(int itemId, Policy policy)
 	{
-		if (!policy.isUntradeable(itemId) && policy.buyTradeables())
+		long n = count(itemId);
+		if (canBuy(itemId, policy))
 		{
-			return Long.MAX_VALUE;
+			// plus as many as the temporary bank's coins can buy
+			n += count(COINS) / policy.tradeablePrice(itemId);
 		}
-		return count(itemId);
+		return n;
 	}
 
 	public long bankValue(IntToLongFunction unitPrice)
@@ -396,11 +444,6 @@ public class RebuildSession
 	public static String formatSeconds(long secs)
 	{
 		return String.format("%d:%02d:%02d", secs / 3600, (secs / 60) % 60, secs % 60);
-	}
-
-	public long totalBorrowed()
-	{
-		return borrowed.values().stream().mapToLong(Long::longValue).sum();
 	}
 
 	public Map<Integer, Long> getItems()

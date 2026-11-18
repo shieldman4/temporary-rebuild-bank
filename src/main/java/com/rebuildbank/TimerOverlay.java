@@ -54,6 +54,16 @@ class TimerOverlay extends OverlayPanel
 			return super.render(graphics);
 		}
 
+		if (plugin.getCachedOwedValue() > 0)
+		{
+			panelComponent.getChildren().add(LineComponent.builder()
+				.left("Owed")
+				.leftColor(Color.RED)
+				.right("-" + Amounts.shortFormat(plugin.getCachedOwedValue()))
+				.rightColor(Color.RED)
+				.build());
+		}
+
 		if (limitSecs > 0)
 		{
 			String left = overTime

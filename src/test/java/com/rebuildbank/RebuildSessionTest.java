@@ -87,11 +87,47 @@ public class RebuildSessionTest
 		assertEquals(5, c.get(0).withdrawn);
 		assertEquals(10, c.get(0).violated);
 		assertEquals(1, s.violations);
-		assertEquals(10, s.totalBorrowed());
+		assertEquals(10, s.getOwed().get(LOBSTER).longValue());
 
-		s.applyRealBank(bank(LOBSTER, 100), STRICT); // deposit them back
+		List<RebuildSession.Change> back = s.applyRealBank(bank(LOBSTER, 100), STRICT); // deposit them back
+		assertEquals(10, back.get(0).repaid);
 		assertEquals(0, s.count(LOBSTER));
-		assertEquals(0, s.totalBorrowed());
+		assertTrue(s.getOwed().isEmpty());
+	}
+
+	@Test
+	public void withdrawAllCoinsThenPutBackOnlyCountsWhatWasYours()
+	{
+		// the reported bug: 30k in the temp bank, 22m in the real bank
+		RebuildSession s = RebuildSession.start(0);
+		s.applyRealBank(bank(COINS, 22_000_000), STRICT);
+		s.applyRealBank(bank(COINS, 22_030_000), STRICT); // deposit 30k
+		assertEquals(30_000, s.count(COINS));
+
+		s.applyRealBank(bank(), STRICT); // Withdraw-All took everything
+		assertEquals(0, s.count(COINS));
+		assertEquals(22_000_000, s.getOwed().get(COINS).longValue());
+		assertEquals(0, s.netValue(id -> 1)); // never negative
+
+		s.applyRealBank(bank(COINS, 22_030_000), STRICT); // put it all back
+		assertEquals(30_000, s.count(COINS)); // not 22m
+		assertTrue(s.getOwed().isEmpty());
+	}
+
+	@Test
+	public void coinsAreNeverBoughtAndBuysNeverGoIntoDebt()
+	{
+		RebuildSession.Policy buy = policy(UntradeableMode.NOT_ALLOWED, 0, true, 25_000);
+		RebuildSession s = RebuildSession.start(0);
+		s.applyRealBank(bank(COINS, 1_000_000, WHIP, 3), buy);
+		s.applyRealBank(bank(COINS, 1_030_000, WHIP, 3), buy); // 30k temp coins
+		assertEquals(30_000, s.withdrawable(COINS, buy)); // coins can't be bought
+		assertEquals(1, s.withdrawable(WHIP, buy)); // 30k buys one 25k whip
+
+		s.applyRealBank(bank(COINS, 1_030_000, WHIP, 1), buy); // took 2 whips
+		assertEquals(5_000, s.count(COINS)); // paid for one
+		assertEquals(1, s.getOwed().get(WHIP).longValue()); // the other is owed
+		assertEquals(0, s.spent); // no debt
 	}
 
 	@Test
@@ -206,12 +242,13 @@ public class RebuildSessionTest
 		RebuildSession.Policy buy = policy(UntradeableMode.NOT_ALLOWED, 0, true, 25_000);
 		RebuildSession s = RebuildSession.start(0);
 		s.applyRealBank(bank(WHIP, 1), buy);
-		assertEquals(Long.MAX_VALUE, s.withdrawable(WHIP, buy));
-		s.applyRealBank(bank(), buy);
-		assertEquals(25_000, s.spent); // no coins, so it's debt
-		s.applyRealBank(bank(WHIP, 1), buy);
+		s.applyRealBank(bank(WHIP, 1, COINS, 25_000), buy);
+		assertEquals(1, s.withdrawable(WHIP, buy));
+		s.applyRealBank(bank(COINS, 25_000), buy); // buy the whip
+		assertEquals(0, s.count(COINS));
+		assertEquals(25_000, s.paid);
+		s.applyRealBank(bank(COINS, 25_000, WHIP, 1), buy); // deposit it: now yours
 		assertEquals(1, s.count(WHIP));
-		assertEquals(0, s.netValue(id -> id == WHIP ? 25_000 : 0));
 	}
 
 	@Test

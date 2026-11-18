@@ -16,6 +16,8 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JSpinner;
+import javax.swing.SpinnerNumberModel;
 import javax.swing.Scrollable;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.JTextField;
@@ -42,6 +44,8 @@ class RebuildBankPanel extends PluginPanel
 	private final JTextField goalItem = new JTextField();
 	private final JTextField goalAmount = new JTextField();
 	private final JButton setGoalButton = new JButton("Set goal");
+	private final JSpinner timeLimit = new JSpinner(new SpinnerNumberModel(60, 0, 100_000, 5));
+	private boolean updatingTimeLimit;
 	private final JLabel goalItemLabel = new JLabel("Item name or ID");
 
 	private final JLabel time = value();
@@ -50,7 +54,6 @@ class RebuildBankPanel extends PluginPanel
 	private final JLabel debt = value();
 	private final JLabel netValue = value();
 	private final JLabel gpHr = value();
-	private final JLabel borrowed = value();
 	private final JLabel violations = value();
 	private final JPanel pkPanel = new JPanel(new GridLayout(0, 2, 4, 3));
 	private final JLabel pkKills = value();
@@ -62,7 +65,7 @@ class RebuildBankPanel extends PluginPanel
 
 	private final JPanel itemList = new JPanel();
 
-	RebuildBankPanel(RebuildBankPlugin plugin, boolean showView)
+	RebuildBankPanel(RebuildBankPlugin plugin, boolean showView, int timeLimitMinutes)
 	{
 		// Not wrapped: the panel fills the whole sidebar so the credits can sit at the very bottom
 		super(false);
@@ -111,16 +114,27 @@ class RebuildBankPanel extends PluginPanel
 		root.add(left(progress));
 		root.add(gap());
 
+		// Challenge time limit, right here for quick changes
+		root.add(left(header("Time limit")));
+		JPanel limit = new JPanel(new BorderLayout(6, 0));
+		JLabel limitLabel = new JLabel("Minutes (0 = no limit)");
+		limitLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		limit.add(limitLabel, BorderLayout.CENTER);
+		timeLimit.setPreferredSize(new Dimension(80, 24));
+		timeLimit.setValue(Math.max(0, timeLimitMinutes));
+		limit.add(timeLimit, BorderLayout.EAST);
+		root.add(left(limit));
+		root.add(gap());
+
 		// Stats
 		root.add(left(header("Stats")));
 		JPanel stats = new JPanel(new GridLayout(0, 2, 4, 3));
 		stat(stats, "In-game time", time);
 		stat(stats, "Bank value", bankValue);
 		stat(stats, "Paid out", spent);
-		stat(stats, "Debt", debt);
+		stat(stats, "Owed to real bank", debt);
 		stat(stats, "Net value", netValue);
 		stat(stats, "GP / hour", gpHr);
-		stat(stats, "Borrowed items", borrowed);
 		stat(stats, "Rule breaks", violations);
 
 		root.add(left(stats));
@@ -172,6 +186,13 @@ class RebuildBankPanel extends PluginPanel
 			}
 		});
 		viewToggle.addActionListener(e -> plugin.setViewEnabled(viewToggle.isSelected()));
+		timeLimit.addChangeListener(e ->
+		{
+			if (!updatingTimeLimit)
+			{
+				plugin.setTimeLimit((Integer) timeLimit.getValue());
+			}
+		});
 		goalType.addActionListener(e -> updateGoalInputs());
 		setGoalButton.addActionListener(e ->
 		{
@@ -187,6 +208,13 @@ class RebuildBankPanel extends PluginPanel
 
 		updateGoalInputs();
 		update(PanelData.LOGGED_OUT);
+	}
+
+	void setTimeLimit(int minutes)
+	{
+		updatingTimeLimit = true;
+		timeLimit.setValue(Math.max(0, minutes));
+		updatingTimeLimit = false;
 	}
 
 	void setViewToggle(boolean on)
@@ -210,7 +238,7 @@ class RebuildBankPanel extends PluginPanel
 		if (!d.isActive())
 		{
 			pkPanel.setVisible(false);
-			for (JLabel l : new JLabel[]{time, bankValue, spent, debt, netValue, gpHr, borrowed, violations})
+			for (JLabel l : new JLabel[]{time, bankValue, spent, debt, netValue, gpHr, violations})
 			{
 				l.setText("-");
 			}
@@ -228,11 +256,10 @@ class RebuildBankPanel extends PluginPanel
 		time.setText(d.getTime());
 		bankValue.setText(Amounts.shortFormat(d.getBankValue()));
 		spent.setText(Amounts.shortFormat(d.getSpent()));
-		debt.setText(Amounts.shortFormat(d.getDebt()));
+		debt.setText(d.getDebt() > 0 ? "-" + Amounts.shortFormat(d.getDebt()) : "0");
 		debt.setForeground(d.getDebt() > 0 ? ColorScheme.PROGRESS_ERROR_COLOR : Color.WHITE);
 		netValue.setText(Amounts.shortFormat(d.getNetValue()));
 		gpHr.setText(Amounts.shortFormat(d.getGpPerHour()));
-		borrowed.setText(Amounts.format(d.getBorrowedCount()));
 		violations.setText(Amounts.format(d.getViolations()));
 		boolean pk = d.getPkKills() > 0;
 		pkPanel.setVisible(pk);

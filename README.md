@@ -14,8 +14,8 @@ Your real bank is never touched. The plugin only changes what you see in the ban
 - Press **Start new temporary bank** in the side panel (chest icon). Everything you own now counts as your hidden "real bank", and the bank interface shows only your temporary bank, laid out without gaps. The bank title shows its value.
 - **Deposits** go into the temporary bank. **Withdrawals** come out of it first.
 - **Real bank / Temp bank** button in the bank's title bar switches between the two views at any time. A checkbox in the side panel does the same.
-- **Withdraw-All** takes only what your temporary bank has. When the bank already has an option for that exact amount (1, 5, 10 or your last X), it uses that one. Otherwise it opens Withdraw-X and tells you the number to type.
-- Withdrawals that would dip into your real bank are blocked. If one gets through anyway (e.g. typing a too-big Withdraw-X), it's recorded as a **rule break** until you deposit it back.
+- **Withdraw-All** never takes your real stack. If your temporary bank has less, the click is blocked and a chat message tells you which option takes exactly what you own (Withdraw-1/5/10/your last X, or Withdraw-X and the number to type).
+- In the temp bank view, withdrawals that would dip into your real bank are blocked. In the real bank view nothing is blocked. If one gets through anyway (e.g. typing a too-big Withdraw-X), the extra is **owed**. It shows in red at the top of the temporary bank ("You owe your real bank") and in the side panel and overlay. Depositing it pays the debt back first, so only what was really yours counts towards the temporary bank.
 
 ### Untradeables
 Untradeables already in your bank sit **locked** below a divider at the bottom of the temporary bank. Click one and choose **Unlock** to move it into your temporary bank.
@@ -42,6 +42,7 @@ Untradeables already in your bank sit **locked** below a divider at the bottom o
 
 - **Goals**: temporary bank value, coins, or a quantity of any item. The side panel shows a progress bar. Reaching the goal stops the timer and sends a chat message and notification with your time and GP/hr.
 - **In-game timer**: counts in-game time only (game ticks), and pauses while you're logged out.
+- **Time limit**: set it in the side panel (minutes, 0 = none).
 - **Timer overlay**: time left on your time limit, time elapsed, net value, GP/hr, goal progress and PK stats. It flashes slowly red when the time limit runs out. Hold Alt and drag to move it.
 - **Player kills**: once you get a PK, the number of kills and the average kill value are shown. Kills with ground loot and kills with loot keys both count; a loot key's value is added when you open the loot chest.
 - **GP/hr** = net value ÷ in-game time. **Net value** = temporary bank value minus any debt.
@@ -51,7 +52,7 @@ Untradeables already in your bank sit **locked** below a divider at the bottom o
 ### Other settings
 <img src="images/settings.png" alt="Plugin settings" align="right" width="200">
 
-- **Buy from hidden bank**: allows withdrawing tradeables from your real bank, paying their GE price with temporary bank coins. Anything your coins can't cover shows as debt.
+- **Buy from hidden bank**: allows withdrawing tradeables from your real bank, paying their GE price with temporary bank coins. Only as many as your coins can pay for; anything beyond that is owed. Coins themselves can never be bought.
 - **Don't count starting items**: tradeables you're wearing or carrying when you press Start go back to your real bank when deposited, instead of counting as progress.
 - **Value untradeables**: counts untradeables at their high alch value. When off, they count as 0 gp.
 
